@@ -97,35 +97,40 @@ Notes:
 - With no valid policy file on the filesystem, the node boots **receive-only**
   (fail closed) until you configure owners via the CLI.
 
-### CLI (`edge`)
+## Setup
 
-Over USB serial at 115200 baud (also works on the ethernet console where enabled):
+### 1. Set it up like a normal repeater
 
-```
-edge status                  - show policy + counters
-edge owner list              - list owner pubkeys
-edge owner show <idx>        - show one owner pubkey in the reply
-edge owner add <64 hex>      - add owner, save
-edge owner del <64 hex>      - remove owner, save
-edge chan list               - list mirrored channel hashes
-edge chan add <2 hex>        - add channel, save
-edge chan del <2 hex>        - remove channel, save
-edge opt mirror_adverts 0|1  - remote advert mirroring, save (default 0)
-edge opt fwd_acks 0|1        - ACK forwarding, save (default 0)
-edge echo                    - show echo suppression settings + counter
-edge echo on|off             - echo suppression, save (default on)
-edge echo wait <0-20>        - extra uplink hold, in packet airtimes, save (default 4)
-edge home                    - show home detection state + live RSSI
-edge home set <hex> [enter exit timeout_min]
-                             - home node pubkey or prefix, save (defaults -60 -80 10)
-edge home off                - disable home detection, save (default off)
-```
+Flash the personal relay firmware (see [Build and flash](#build-and-flash))
+and configure it the way you would any MeshCore repeater: name, radio
+settings, admin password, and so on. Everything below is the extra edge
+configuration on top of that.
 
-Configuration persists to `/edge_policy` on the device filesystem. Older
-firmware does not know the `echo_*` / `home` directives and treats such a
-file as invalid (receive-only), so after a downgrade, re-run your setup.
+The `edge` commands run over USB serial at 115200 baud (also on the ethernet
+console where enabled). A full command list is in
+[`edge` command reference](#edge-command-reference).
 
-#### Echo suppression
+### 2. Add your companions (required)
+
+Until at least one owner is saved, the relay stays **receive-only** and
+forwards nothing.
+
+1. In the MeshCore phone app, open the companion's node details and copy its
+   public key (64 hex characters).
+2. In the serial console: `edge owner add <paste the key>`.
+3. Confirm with `edge owner list` and `edge status`.
+
+Repeat for each companion you own (up to 8).
+
+### 3. Mirror group channels (optional)
+
+To also relay a group channel for your companions, add its 1-byte channel
+hash: `edge chan add <2 hex>`. Check with `edge chan list`.
+
+### 4. Echo suppression (on by default)
+
+Nothing to do unless you want to change it (`edge echo on|off`,
+`edge echo wait <0-20>`).
 
 When your companion is close enough to reach a real repeater on its own, the
 relay's copy of your uplink is redundant. With echo suppression on (the
@@ -143,7 +148,7 @@ your companion heard the repeater. `edge status` reports cancellations as
 `echo_cancel` (they are still counted in `uplink_fwd`, which counts uplink
 packets accepted for forwarding).
 
-#### Home detection (pause when parked at home)
+### 5. Home detection (optional)
 
 When the car is parked at home, your base station already covers you, so the
 relay can stop entirely: no uplink forwards and no downlink local copies.
@@ -163,7 +168,7 @@ counts, not "somewhere in the home repeater's coverage":
   fading), or when no strong home-node packet has been heard for `timeout`
   minutes (default 10). Samples older than the timeout are discarded.
 
-Setup:
+To set it up:
 
 1. Copy your home repeater's public key from the app (the full 64 hex chars is
    best: a short prefix can collide with another node's path hash).
@@ -202,15 +207,37 @@ car body and garage walls can shift readings by 10–15 dB, so tune it in place.
 If the home node is quiet (few adverts, little traffic to repeat), make the
 timeout longer than its advert interval.
 
-#### Adding your companions
+### 6. Check it
 
-1. In the MeshCore phone app, open the companion's node details and copy its
-   public key (64 hex characters).
-2. In the serial console: `edge owner add <paste the key>`.
-3. Confirm with `edge owner list` and `edge status`.
+`edge status` shows the policy, echo and home state, and the counters
+(`uplink_fwd`, `echo_cancel`, `home_held`, `local_copy`, `direct_fwd`,
+`dropped`).
 
-Repeat for each companion you own (up to 8). Until at least one valid policy
-is saved, the node stays receive-only.
+## `edge` command reference
+
+```
+edge status                  - show policy + counters
+edge owner list              - list owner pubkeys
+edge owner show <idx>        - show one owner pubkey in the reply
+edge owner add <64 hex>      - add owner, save
+edge owner del <64 hex>      - remove owner, save
+edge chan list               - list mirrored channel hashes
+edge chan add <2 hex>        - add channel, save
+edge chan del <2 hex>        - remove channel, save
+edge opt mirror_adverts 0|1  - remote advert mirroring, save (default 0)
+edge opt fwd_acks 0|1        - ACK forwarding, save (default 0)
+edge echo                    - show echo suppression settings + counter
+edge echo on|off             - echo suppression, save (default on)
+edge echo wait <0-20>        - extra uplink hold, in packet airtimes, save (default 4)
+edge home                    - show home detection state + live RSSI
+edge home set <hex> [enter exit timeout_min]
+                             - home node pubkey or prefix, save (defaults -60 -80 10)
+edge home off                - disable home detection, save (default off)
+```
+
+Configuration persists to `/edge_policy` on the device filesystem. Older
+firmware does not know the `echo_*` / `home` directives and treats such a
+file as invalid (receive-only), so after a downgrade, re-run your setup.
 
 ## Build and flash
 
