@@ -21,14 +21,16 @@ runs:
       run: |
         pip install --upgrade platformio
 
-    # a git tag of "room-server-v1.2.3" should set "v1.2.3" as GIT_TAG_VERSION
+    # a git tag of "room-server-v1.2.3" should set "v1.2.3" as GIT_TAG_VERSION,
+    # and "personal-relay-v1.17.1-er-abc1234" should set "v1.17.1-er-abc1234"
     - name: Extract Version from Git Tag
       shell: bash
       run: |
         if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
           # triggered by a tag push (e.g: refs/tags/companion-v1.2.3)
           GIT_TAG_NAME="${GITHUB_REF#refs/tags/}"
-          VERSION_STRING="${GIT_TAG_NAME##*-}"
+          # everything from the first "-v" on, so suffixed versions survive
+          VERSION_STRING="v${GIT_TAG_NAME#*-v}"
         else
           # triggered by a workflow dispatch (e.g: refs/heads/main)
           # strip "refs/heads/" prefix and replace any remaining "/" with "-" to protect file paths

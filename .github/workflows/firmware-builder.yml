@@ -9,6 +9,15 @@ on:
       release_title_prefix:
         required: true
         type: string
+      prerelease:
+        # publish as a pre-release instead of leaving a draft for manual review
+        required: false
+        type: boolean
+        default: false
+      release_body:
+        required: false
+        type: string
+        default: ""
 
 jobs:
 
@@ -85,6 +94,7 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           name: "${{ inputs.release_title_prefix }} ${{ env.GIT_TAG_VERSION }}"
-          body: ""
-          draft: true
+          body: ${{ inputs.release_body }}
+          draft: ${{ !inputs.prerelease }}
+          prerelease: ${{ inputs.prerelease }}
           files: out/*

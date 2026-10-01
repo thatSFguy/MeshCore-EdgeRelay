@@ -4,7 +4,14 @@ permissions:
   contents: write
 
 on:
+  # Run on a branch for test builds (artifacts only), or on a tag such as
+  # personal-relay-v1.17.1-er-abc1234 to also publish a release.
   workflow_dispatch:
+    inputs:
+      prerelease:
+        description: 'Tag runs: publish as a pre-release (unchecked: draft release)'
+        type: boolean
+        default: true
   # Manual-only for this fork: automatic tag builds disabled.
   # push:
   #   tags:
@@ -16,3 +23,14 @@ jobs:
     with:
       firmware_type: 'personal-relay'
       release_title_prefix: 'Personal Relay Firmware'
+      prerelease: ${{ inputs.prerelease }}
+      release_body: |
+        Personal relay firmware, tag `${{ github.ref_name }}`. File names and the
+        reported version read `v<MeshCore release>-er-<commit>`: the MeshCore
+        release it is built on, then the fork commit.
+
+        **Status: passed bench testing, pending field verification.**
+        Flash the file for your board (`.uf2` for nRF52 boards such as the ProMicro / RAK4631,
+        `-merged.bin` for a fresh ESP32 install, `.bin` to update an ESP32).
+        Configuration and the `edge` CLI are documented in the
+        [README](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/README.md).
