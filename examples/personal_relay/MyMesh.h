@@ -80,6 +80,19 @@ struct NeighbourInfo {
   #define FIRMWARE_VERSION   "v1.17.1"
 #endif
 
+// MeshCore release this fork is based on: src/ is unmodified from this tag.
+// Bump it when merging a newer upstream release.
+#define UPSTREAM_VERSION   "v1.17.1"
+
+// Reported version, e.g. "v1.17.1-er-1911a2f": upstream base, edge relay, commit.
+// CI's FIRMWARE_VERSION is derived from the branch name and says nothing about
+// the MeshCore base, so it is not used here; build.sh supplies FIRMWARE_COMMIT.
+#ifdef FIRMWARE_COMMIT
+  #define EDGE_RELAY_VERSION   UPSTREAM_VERSION "-er-" FIRMWARE_COMMIT
+#else
+  #define EDGE_RELAY_VERSION   UPSTREAM_VERSION "-er"
+#endif
+
 #define FIRMWARE_ROLE "repeater"
 
 #define PACKET_LOG_FILE  "/packet_log"
@@ -189,7 +202,7 @@ public:
 
   void begin(FILESYSTEM* fs);
   void sendNodeDiscoverReq();
-  const char* getFirmwareVer() override { return FIRMWARE_VERSION; }
+  const char* getFirmwareVer() override { return EDGE_RELAY_VERSION; }
   const char* getBuildDate() override { return FIRMWARE_BUILD_DATE; }
   const char* getRole() override { return FIRMWARE_ROLE; }
   const char* getNodeName() { return _prefs.node_name; }

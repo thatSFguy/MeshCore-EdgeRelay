@@ -25,6 +25,20 @@ stock `simple_repeater` example, which is left untouched:
   path) and no return path is learned through the car.
 - **Everything else:** dropped.
 
+## Upstream base and versioning
+
+Based on **MeshCore v1.17.1** (tag `repeater-v1.17.1`, commit `d929643`).
+Core code in `src/` and the stock examples are unmodified from that tag;
+upstream `main` has only documentation changes since.
+
+The personal relay reports its version as `<upstream>-er-<commit>`, e.g.
+`v1.17.1-er-1911a2f`: the MeshCore release it is built on, `er` for edge
+relay, and the fork commit it was built from (just `v1.17.1-er` for local
+builds outside `build.sh`). The `ver` CLI command and the app's owner info
+show the full string; the OLED shows the upstream part. When merging a newer
+upstream release, bump `UPSTREAM_VERSION` in
+`examples/personal_relay/MyMesh.h`.
+
 ## What changed vs upstream
 
 All changes are confined to `examples/personal_relay/` (plus this README,
