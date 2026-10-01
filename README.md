@@ -35,7 +35,9 @@ The personal relay reports its version as `<upstream>-er-<commit>`, e.g.
 `v1.17.1-er-1911a2f`: the MeshCore release it is built on, `er` for edge
 relay, and the fork commit it was built from (just `v1.17.1-er` for local
 builds outside `build.sh`). The `ver` CLI command and the app's owner info
-show the full string; the OLED shows the upstream part. When merging a newer
+show the full string; the OLED shows the upstream part. `build.sh` names the
+firmware files the same way, e.g. `ProMicro_personal_relay-v1.17.1-er-1911a2f.uf2`,
+so a file and the device running it always show the same version. When merging a newer
 upstream release, bump `UPSTREAM_VERSION` in
 `examples/personal_relay/MyMesh.h`.
 
