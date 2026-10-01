@@ -169,6 +169,14 @@ Setup:
    best: a short prefix can collide with another node's path hash).
 2. `edge home set <key>` (or `edge home set <key> -55 -80 15` to choose
    thresholds and timeout).
+   - The three numbers are **all or none**: `<enter> <exit> <timeout_min>`
+     together, or leave all three off for the defaults (-60 -80 10). Giving
+     only one or two is rejected.
+   - `enter` must be higher (stronger) than `exit`, both between -140 and
+     0 dBm, and the timeout 1–240 minutes.
+   - On any error the command replies `Err - ...` and the previous setting
+     stays in place. To change one value, re-enter the key with all three
+     numbers.
 3. Park where you normally do and run `edge home` a few times. It shows the
    live average (`avg`), latest reading (`last`), sample count, and the age of
    the last sample. Pick `enter` a few dB below what you see parked, and
