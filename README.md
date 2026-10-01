@@ -158,6 +158,21 @@ Setup:
    the last sample. Pick `enter` a few dB below what you see parked, and
    `exit` comfortably below that.
 
+Example readings while parked (it needs 3 samples before it can switch to
+home, so expect a few minutes after arriving):
+
+```
+edge home
+  -> OK - away node:b389548d enter:-60 exit:-80 timeout:10m avg:-37 last:-42 n:2 age:34s held:0
+edge home
+  -> OK - HOME node:b389548d enter:-60 exit:-80 timeout:10m avg:-38 last:-40 n:4 age:58s held:0
+```
+
+While home, every forward or local copy the relay would otherwise have sent
+is counted in `held` (shown as `home_held` in `edge status`) instead of being
+transmitted. Send a message from your companion while parked to confirm it
+goes up.
+
 Notes: use RSSI rather than SNR, because SNR saturates at close range. The
 car body and garage walls can shift readings by 10–15 dB, so tune it in place.
 If the home node is quiet (few adverts, little traffic to repeat), make the
