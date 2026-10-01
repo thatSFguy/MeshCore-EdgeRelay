@@ -4,12 +4,16 @@ permissions:
   contents: write
 
 on:
-  # Run on a branch for test builds (artifacts only), or on a tag such as
-  # personal-relay-v1.17.1-er-abc1234 to also publish a release.
+  # Run on a branch for test builds (artifacts only). Tick "publish" to also
+  # create a release tagged personal-relay-v<MeshCore release>-er-<commit>.
   workflow_dispatch:
     inputs:
+      publish:
+        description: 'Publish a release (tag created at the built commit)'
+        type: boolean
+        default: false
       prerelease:
-        description: 'Tag runs: publish as a pre-release (unchecked: draft release)'
+        description: 'Mark the release as a pre-release (unchecked: draft for review)'
         type: boolean
         default: true
   # Manual-only for this fork: automatic tag builds disabled.
@@ -18,14 +22,36 @@ on:
   #     - 'personal-relay-*'
 
 jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - name: Clone Repo
+        uses: actions/checkout@v6
+
+      - name: Release Tag from Upstream Version and Commit
+        id: version
+        shell: bash
+        run: |
+          # same version build.sh gives personal relay files, e.g: v1.17.1-er-abc1234
+          UPSTREAM_VERSION=$(sed -n 's/^#define UPSTREAM_VERSION *"\(.*\)".*/\1/p' examples/personal_relay/MyMesh.h)
+          if [ -z "$UPSTREAM_VERSION" ]; then
+            echo "UPSTREAM_VERSION not found in examples/personal_relay/MyMesh.h"
+            exit 1
+          fi
+          echo "tag=personal-relay-${UPSTREAM_VERSION}-er-$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
   build-personal-relay-firmwares:
+    needs: version
     uses: ./.github/workflows/firmware-builder.yml
     with:
       firmware_type: 'personal-relay'
       release_title_prefix: 'Personal Relay Firmware'
+      release_tag: ${{ inputs.publish && needs.version.outputs.tag || '' }}
       prerelease: ${{ inputs.prerelease }}
       release_body: |
-        Personal relay firmware, tag `${{ github.ref_name }}`. File names and the
+        Personal relay firmware `${{ needs.version.outputs.tag }}`. File names and the
         reported version read `v<MeshCore release>-er-<commit>`: the MeshCore
         release it is built on, then the fork commit.
 
@@ -33,4 +59,4 @@ jobs:
         Flash the file for your board (`.uf2` for nRF52 boards such as the ProMicro / RAK4631,
         `-merged.bin` for a fresh ESP32 install, `.bin` to update an ESP32).
         Configuration and the `edge` CLI are documented in the
-        [README](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/README.md).
+        [README](https://github.com/${{ github.repository }}/blob/${{ github.sha }}/README.md).
