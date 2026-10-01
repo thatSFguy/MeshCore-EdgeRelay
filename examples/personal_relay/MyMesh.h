@@ -37,6 +37,7 @@
 #include <helpers/RoutingPolicy.h>
 #include "RateLimiter.h"
 #include "EdgePolicy.h"
+#include "HomePresence.h"
 
 #ifdef WITH_BRIDGE
 extern AbstractBridge* bridge;
@@ -103,6 +104,7 @@ class MyMesh : public mesh::Mesh, public CommonCLICallbacks {
   RateLimiter discover_limiter, anon_limiter;
   EdgePolicy edge_policy;      // directional good-citizen policy for this edge relay
   EdgePolicyStats edge_stats;
+  HomePresence home_presence;  // runtime "parked at home" state (config lives in edge_policy)
   uint32_t pending_discover_tag;
   unsigned long pending_discover_until;
   bool region_load_active;
@@ -232,6 +234,8 @@ public:
 
   void handleCommand(uint32_t sender_timestamp, char* command, char* reply);
   void handleEdgeCommand(char* args, char* reply);
+  bool cancelEchoedForward(const mesh::Packet* echo);
+  bool isHomeHeld() const { return edge_policy.isHomeEnabled() && home_presence.isHome(); }
   void loop();
 
 #if defined(WITH_BRIDGE)

@@ -5,6 +5,13 @@ EdgePolicy::EdgePolicy() {
   _num_channels = 0;
   _mirror_adverts = false;
   _fwd_acks = false;
+  _echo_suppress = true;
+  _echo_wait = EDGE_ECHO_WAIT_DEFAULT;
+  _home_prefix_len = 0;
+  _home_enter = EDGE_HOME_ENTER_DEFAULT;
+  _home_exit = EDGE_HOME_EXIT_DEFAULT;
+  _home_timeout = EDGE_HOME_TIMEOUT_DEFAULT;
+  memset(_home_prefix, 0, sizeof(_home_prefix));
   _valid = false;   // no policy loaded yet -> fail closed until load() succeeds
   _rl_start_ms = 0;
   _rl_count = 0;
@@ -72,6 +79,42 @@ bool EdgePolicy::removeChannel(uint8_t hash1) {
       return true;
     }
   }
+  return false;
+}
+
+bool EdgePolicy::setEchoWait(int v) {
+  if (v < 0 || v > EDGE_ECHO_WAIT_MAX) return false;
+  _echo_wait = (uint8_t) v;
+  return true;
+}
+
+bool EdgePolicy::setHome(const uint8_t* prefix, uint8_t prefix_len, int enter, int exit, int timeout_min) {
+  if (prefix_len < 1 || prefix_len > EDGE_HOME_PREFIX_MAX) return false;
+  if (enter > 0 || exit < -140 || enter <= exit) return false;
+  if (timeout_min < 1 || timeout_min > EDGE_HOME_TIMEOUT_MAX) return false;
+  memcpy(_home_prefix, prefix, prefix_len);
+  _home_prefix_len = prefix_len;
+  _home_enter = (int16_t) enter;
+  _home_exit = (int16_t) exit;
+  _home_timeout = (uint8_t) timeout_min;
+  return true;
+}
+
+bool EdgePolicy::isFromHome(const mesh::Packet* pkt) const {
+  if (_home_prefix_len == 0) return false;
+  uint8_t n = pkt->getPathHashCount();
+  if (pkt->isRouteFlood() && n > 0) {
+    // The last path entry was appended by whoever just transmitted it.
+    uint8_t sz = pkt->getPathHashSize();
+    uint8_t cmp = sz < _home_prefix_len ? sz : _home_prefix_len;
+    return memcmp(&pkt->path[(n - 1) * sz], _home_prefix, cmp) == 0;
+  }
+  if (n == 0 && pkt->getPayloadType() == PAYLOAD_TYPE_ADVERT && pkt->payload_len >= PUB_KEY_SIZE) {
+    // Zero-hop advert: the sender's full public key is in the payload.
+    return memcmp(pkt->payload, _home_prefix, _home_prefix_len) == 0;
+  }
+  // Direct paths list hops still to go, not the transmitter; TRACE paths hold
+  // SNRs. Neither identifies the sender.
   return false;
 }
 
@@ -201,6 +244,9 @@ EdgeAction EdgePolicy::classify(const mesh::Packet* pkt, const uint8_t* self_has
 //   chan <2 hex chars of channel hash>
 //   mirror_adverts 0|1
 //   fwd_acks 0|1
+//   echo_suppress 0|1        (optional; default 1)
+//   echo_wait <0..20>        (optional; default 4)
+//   home <hex prefix> <enter dBm> <exit dBm> <timeout min>   (optional; absent = off)
 // Any parse error invalidates the whole policy (fail closed).
 
 static File openPolicyRead(FILESYSTEM* fs) {
@@ -221,17 +267,54 @@ static File openPolicyWrite(FILESYSTEM* fs) {
 #endif
 }
 
+bool EdgePolicy::parseHome(const char* args) {
+  // "<hex prefix> [enter exit timeout]"; numbers default when omitted.
+  while (*args == ' ') args++;
+  const char* hex = args;
+  int hex_len = 0;
+  while (hex[hex_len] != 0 && hex[hex_len] != ' ') {
+    if (!mesh::Utils::isHexChar(hex[hex_len])) return false;  // fromHex() does not validate
+    hex_len++;
+  }
+  if (hex_len < 2 || hex_len > EDGE_HOME_PREFIX_MAX * 2 || (hex_len & 1)) return false;
+  char hex_buf[EDGE_HOME_PREFIX_MAX * 2 + 1];
+  memcpy(hex_buf, hex, hex_len);
+  hex_buf[hex_len] = 0;
+  uint8_t prefix[EDGE_HOME_PREFIX_MAX];
+  if (!mesh::Utils::fromHex(prefix, hex_len / 2, hex_buf)) return false;
+
+  long vals[3] = { EDGE_HOME_ENTER_DEFAULT, EDGE_HOME_EXIT_DEFAULT, EDGE_HOME_TIMEOUT_DEFAULT };
+  const char* p = hex + hex_len;
+  for (int i = 0; i < 3; i++) {
+    while (*p == ' ') p++;
+    if (*p == 0) {
+      if (i == 0) break;  // prefix only: all defaults
+      return false;       // partial list: ambiguous, reject
+    }
+    char* end;
+    vals[i] = strtol(p, &end, 10);
+    if (end == p) return false;
+    p = end;
+  }
+  while (*p == ' ') p++;
+  if (*p != 0) return false;
+  return setHome(prefix, hex_len / 2, (int) vals[0], (int) vals[1], (int) vals[2]);
+}
+
 bool EdgePolicy::load(FILESYSTEM* fs) {
   _valid = false;
   _num_owners = 0;
   _num_channels = 0;
   _mirror_adverts = false;
   _fwd_acks = false;
+  _echo_suppress = true;
+  _echo_wait = EDGE_ECHO_WAIT_DEFAULT;
+  _home_prefix_len = 0;
 
   File f = openPolicyRead(fs);
   if (!f) return false;
 
-  char line[80];
+  char line[112];   // longest directive: "home" + 64 hex + 3 numbers
   int n = 0;
   bool got_magic = false;
   // parse one line at a time, char by char (f.read() is the portable primitive here)
@@ -261,6 +344,14 @@ bool EdgePolicy::load(FILESYSTEM* fs) {
           _mirror_adverts = (line[15] == '1');
         } else if (memcmp(line, "fwd_acks ", 9) == 0) {
           _fwd_acks = (line[9] == '1');
+        } else if (memcmp(line, "echo_suppress ", 14) == 0) {
+          _echo_suppress = (line[14] == '1');
+        } else if (memcmp(line, "echo_wait ", 10) == 0) {
+          char* end;
+          long v = strtol(line + 10, &end, 10);
+          if (end == line + 10 || *end != 0 || !setEchoWait((int) v)) { f.close(); return false; }
+        } else if (memcmp(line, "home ", 5) == 0) {
+          if (!parseHome(line + 5)) { f.close(); return false; }
         } else {
           f.close(); return false;  // unknown directive -> fail closed
         }
@@ -300,6 +391,17 @@ bool EdgePolicy::save(FILESYSTEM* fs) {
   f.println(_mirror_adverts ? "1" : "0");
   f.print("fwd_acks ");
   f.println(_fwd_acks ? "1" : "0");
+  f.print("echo_suppress ");
+  f.println(_echo_suppress ? "1" : "0");
+  f.print("echo_wait ");
+  f.println((int) _echo_wait);
+  if (_home_prefix_len > 0) {
+    char prefix_hex[EDGE_HOME_PREFIX_MAX * 2 + 1];
+    for (int k = 0; k < _home_prefix_len; k++) {
+      sprintf(&prefix_hex[k * 2], "%02x", _home_prefix[k]);
+    }
+    f.printf("home %s %d %d %d\n", prefix_hex, (int) _home_enter, (int) _home_exit, (int) _home_timeout);
+  }
   f.close();
   _valid = true;
   return true;

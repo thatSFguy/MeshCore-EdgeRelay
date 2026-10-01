@@ -39,6 +39,8 @@ code in `src/` and the stock `simple_repeater` example are untouched.
 | `sendSelfAdvertisement()` | No-op. The car **never** advertises, so the mesh never learns routes through a moving node. |
 | `updateAdvertTimer()` / `updateFloodAdvertTimer()` / `loop()` | Advert timers permanently stopped; timer blocks removed from `loop()`. Boot adverts are also suppressed via the no-op. |
 | `handleCommand()` | New `edge` CLI for configuration over USB serial (see below). |
+| `onRecvPacket()` / `cancelEchoedForward()` | Echo suppression: owner uplinks are held briefly and cancelled if another repeater re-floods them first. |
+| `HomePresence.h` (new), `logRx()` / `loop()` | Home detection: RSSI of the configured home node pauses all relaying while parked at home. |
 
 ### Packet policy (default)
 
@@ -94,9 +96,72 @@ edge chan add <2 hex>        - add channel, save
 edge chan del <2 hex>        - remove channel, save
 edge opt mirror_adverts 0|1  - remote advert mirroring, save (default 0)
 edge opt fwd_acks 0|1        - ACK forwarding, save (default 0)
+edge echo                    - show echo suppression settings + counter
+edge echo on|off             - echo suppression, save (default on)
+edge echo wait <0-20>        - extra uplink hold, in packet airtimes, save (default 4)
+edge home                    - show home detection state + live RSSI
+edge home set <hex> [enter exit timeout_min]
+                             - home node pubkey or prefix, save (defaults -60 -80 10)
+edge home off                - disable home detection, save (default off)
 ```
 
-Configuration persists to `/edge_policy` on the device filesystem.
+Configuration persists to `/edge_policy` on the device filesystem. Older
+firmware does not know the `echo_*` / `home` directives and treats such a
+file as invalid (receive-only), so after a downgrade, re-run your setup.
+
+#### Echo suppression
+
+When your companion is close enough to reach a real repeater on its own, the
+relay's copy of your uplink is redundant. With echo suppression on (the
+default), an owner uplink forward is held for a few extra packet airtimes
+(`edge echo wait`, default 4) on top of the normal random retransmit delay.
+If, during that hold, the relay hears another repeater re-flood the same
+packet, the mesh already has it, so the queued forward is cancelled. If no
+echo arrives, the relay forwards as normal.
+
+This decides per packet, without thresholds: next to infrastructure the relay
+stays quiet, deep inside a building it bridges. It costs a little extra
+latency on uplink only (roughly 1–6 s depending on radio preset). Downlink
+zero-hop copies are never cancelled, since the relay cannot tell whether
+your companion heard the repeater. `edge status` reports cancellations as
+`echo_cancel` (they are still counted in `uplink_fwd`, which counts uplink
+packets accepted for forwarding).
+
+#### Home detection (pause when parked at home)
+
+When the car is parked at home, your base station already covers you, so the
+relay can stop entirely: no uplink forwards and no downlink local copies.
+Admin login over zero-hop still works.
+
+The relay decides it is home from the RSSI of packets your **home node**
+transmits: its zero-hop adverts (matched on the full public key) and any
+flood it repeats (matched on the last path entry, i.e. the node that just
+transmitted). The threshold is deliberately strict, so only the driveway
+counts, not "somewhere in the home repeater's coverage":
+
+- **Home** when the average of the last 4 home-node packets (at least 3)
+  reaches `enter` (default -60 dBm).
+- **Stays home** while that average stays at or above `exit` (default
+  -80 dBm). The gap between the two prevents flapping.
+- **Away** as soon as the average drops below `exit` (driving off, signal
+  fading), or when no strong home-node packet has been heard for `timeout`
+  minutes (default 10). Samples older than the timeout are discarded.
+
+Setup:
+
+1. Copy your home repeater's public key from the app (the full 64 hex chars is
+   best: a short prefix can collide with another node's path hash).
+2. `edge home set <key>` (or `edge home set <key> -55 -80 15` to choose
+   thresholds and timeout).
+3. Park where you normally do and run `edge home` a few times. It shows the
+   live average (`avg`), latest reading (`last`), sample count, and the age of
+   the last sample. Pick `enter` a few dB below what you see parked, and
+   `exit` comfortably below that.
+
+Notes: use RSSI rather than SNR, because SNR saturates at close range. The
+car body and garage walls can shift readings by 10–15 dB, so tune it in place.
+If the home node is quiet (few adverts, little traffic to repeat), make the
+timeout longer than its advert interval.
 
 #### Adding your companions
 
@@ -135,7 +200,8 @@ Goals: give the owner's companions one extra hop into the mesh; never
 poison other repeaters' learned paths; add no measurable load to the wider
 mesh; stay a single-purpose, reviewable change on top of stock code.
 
-Non-goals: general-purpose repeating, movement/parked detection, GPS,
+Non-goals: general-purpose repeating, movement detection (beyond the
+optional "parked at home" check), GPS,
 telemetry, administration beyond direct radio range, or any change to the
 MeshCore wire protocol.
 
