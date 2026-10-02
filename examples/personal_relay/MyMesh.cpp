@@ -1326,6 +1326,10 @@ void MyMesh::clearStats() {
 
 void MyMesh::handleEdgeCommand(char* args, char* reply) {
   while (*args == ' ') args++;
+  // Trim trailing whitespace too: apps may send "edge home " (autocomplete),
+  // which would otherwise miss every exact-match subcommand below.
+  char* tail = args + strlen(args);
+  while (tail > args && (tail[-1] == ' ' || tail[-1] == '\t' || tail[-1] == '\r' || tail[-1] == '\n')) *(--tail) = 0;
 
   if (*args == 0 || strcmp(args, "help") == 0) {
     Serial.println("edge status                  - show policy + counters");
