@@ -69,7 +69,7 @@ code in `src/` and the stock `simple_repeater` example are untouched.
 | `ADVERT` from an owner | Drop (never export owner adverts) | — |
 | `ADVERT` from anyone else | Drop (mirroring opt-in only, off by default) | — |
 | `ACK` | Drop (forwarding opt-in only, off by default) | Same |
-| `ANON_REQ` | Drop | Link-local zero-hop only: info queries, password login, and the resulting admin session from authenticated clients (stock crypto auth still enforced on every packet; flood/multi-hop stays dropped) |
+| `ANON_REQ` | Link-local only: password login heard directly (empty path, addressed to this node); never forwarded | Link-local zero-hop only: info queries, password login, and the resulting admin session from authenticated clients (stock crypto auth still enforced on every packet; multi-hop stays dropped) |
 | `TRACE`, `MULTIPART`, `RAW_CUSTOM`, unknown | Drop | Drop |
 | `CONTROL` | Drop | Drop (except link-local zero-hop, e.g. discovery replies, which can't propagate) |
 
@@ -91,11 +91,16 @@ Notes:
 - App login and remote administration are allowed, but only from direct radio
   range (zero-hop): the admin password is still required, and stock's
   cryptographic authentication applies to every session packet (the 1-byte
-  prefix the classifier sees is only a routing hint). Flood and multi-hop
-  admin traffic is dropped, so the node cannot be administered through the
-  wider mesh. USB serial remains available as the primary console.
+  prefix the classifier sees is only a routing hint). A login is accepted
+  whether the app sends it direct or as a flood (apps flood when they have no
+  stored path, which is usual since this node never advertises), as long as
+  it was heard directly, not relayed. Replies go out zero-hop, never flooded.
+  Relayed (multi-hop) admin traffic is dropped, so the node cannot be
+  administered through the wider mesh. USB serial remains available as the
+  primary console.
 - With no valid policy file on the filesystem, the node boots **receive-only**
-  (fail closed) until you configure owners via the CLI.
+  (fail closed) until you configure owners via the CLI. Zero-hop admin login
+  still works in that state, so it can always be recovered over LoRa.
 
 ## Setup
 

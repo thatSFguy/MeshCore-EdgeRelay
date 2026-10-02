@@ -137,11 +137,25 @@ static bool isDirectRoute(uint8_t route) {
 }
 
 EdgeAction EdgePolicy::classify(const mesh::Packet* pkt, const uint8_t* self_hash, uint8_t self_hash_len) const {
-  if (!_valid) return EDGE_DROP;  // fail closed: receive-only
-
   uint8_t route = pkt->getRouteType();
   uint8_t ptype = pkt->getPayloadType();
   uint8_t path_count = pkt->getPathHashCount();
+
+  // Link-local anonymous requests (app login, info queries): heard directly,
+  // i.e. an empty path, whether sent DIRECT or as a FLOOD. Apps send a login
+  // as a flood when they have no stored path, which is the usual case since
+  // this node never advertises. Checked before policy validity so a missing
+  // or bad policy file never locks out admin over LoRa. Stock still checks
+  // the password and the crypto; checkForward() never forwards these.
+  if (ptype == PAYLOAD_TYPE_ANON_REQ) {
+    if (path_count != 0) return EDGE_DROP;          // relayed: not link-local
+    if (isDirectRoute(route)) return EDGE_STOCK;    // stock checks the dest hash
+    // flood: only if addressed to this node, so others' logins are left alone
+    return (pkt->payload_len >= 1 && self_hash_len >= 1 && pkt->payload[0] == self_hash[0])
+               ? EDGE_STOCK : EDGE_DROP;
+  }
+
+  if (!_valid) return EDGE_DROP;  // fail closed: receive-only
 
   if (isFloodRoute(route)) {
     switch (ptype) {
@@ -187,20 +201,18 @@ EdgeAction EdgePolicy::classify(const mesh::Packet* pkt, const uint8_t* self_has
       }
       default:
         // TRACE, CONTROL, MULTIPART, RAW_CUSTOM, unknown: drop.
-        // (ANON_REQ is answered only when zero-hop direct; see below.)
+        // (ANON_REQ is handled at the top: link-local only.)
         return EDGE_DROP;
     }
   }
 
   if (isDirectRoute(route)) {
     if (path_count == 0) {
-      // Zero-hop direct: link-local only. Allow control (e.g. discovery),
-      // anonymous requests (info queries + password login), and post-login
-      // admin session packets from known clients (handled just above in
-      // onRecvPacket) through stock handling; a direct exchange cannot
-      // propagate or teach the mesh a path through us. Everything else: drop.
-      return (ptype == PAYLOAD_TYPE_CONTROL || ptype == PAYLOAD_TYPE_ANON_REQ)
-                 ? EDGE_STOCK : EDGE_DROP;
+      // Zero-hop direct: link-local only. Allow control (e.g. discovery)
+      // through stock handling (ANON_REQ and post-login admin sessions are
+      // handled earlier); a direct exchange cannot propagate or teach the
+      // mesh a path through us. Everything else: drop.
+      return ptype == PAYLOAD_TYPE_CONTROL ? EDGE_STOCK : EDGE_DROP;
     }
     // This node must be the named next hop, or the packet is not ours to touch.
     uint8_t hash_len = pkt->getPathHashSize();

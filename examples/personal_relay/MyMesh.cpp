@@ -658,7 +658,9 @@ mesh::DispatcherAction MyMesh::onRecvPacket(mesh::Packet* pkt) {
       return ACTION_RELEASE;
     }
     // EDGE_STOCK: fall through to normal handling below.
-    if (pkt->isRouteFlood() && pkt->getPathHashCount() == 0) {
+    if (pkt->getPayloadType() == PAYLOAD_TYPE_ANON_REQ) {
+      // link-local login / info request: answered, never forwarded
+    } else if (pkt->isRouteFlood() && pkt->getPathHashCount() == 0) {
       edge_stats.n_owner_uplink++;
       is_owner_uplink = true;
     } else if (pkt->isRouteDirect() && pkt->getPathHashCount() > 0) {
@@ -734,6 +736,13 @@ void MyMesh::onAnonDataRecv(mesh::Packet *packet, const uint8_t *secret, const m
 
     // a DIRECT login can reply via the stored out_path, as onPeerDataRecv() does for REQ
     ClientInfo* client = acl.getClient(sender.pub_key, PUB_KEY_SIZE);
+
+    // Edge relay: only link-local (empty-path) requests get here. The sender
+    // is in direct radio range, so its route is zero hops: record that, and
+    // answer zero-hop rather than flooding the reply into the wider mesh.
+    bool link_local = packet->getPathHashCount() == 0;
+    if (link_local && client != NULL) client->out_path_len = 0;
+
     bool have_out_path = client != NULL && client->out_path_len != OUT_PATH_UNKNOWN;
 
     auto route = mesh::chooseReplyRoute(packet->isRouteFlood(), reply_path_len != 0xFF, have_out_path);
@@ -742,7 +751,13 @@ void MyMesh::onAnonDataRecv(mesh::Packet *packet, const uint8_t *secret, const m
       // let this sender know path TO here, so they can use sendDirect(), and ALSO encode the response
       mesh::Packet* path = createPathReturn(sender, secret, packet->path, packet->path_len,
                                             PAYLOAD_TYPE_RESPONSE, reply_data, reply_len);
-      if (path) sendFloodReply(path, SERVER_RESPONSE_DELAY, packet->getPathHashSize());
+      if (path) {
+        if (link_local) {
+          sendZeroHop(path, SERVER_RESPONSE_DELAY);   // empty path: "I'm one hop away"
+        } else {
+          sendFloodReply(path, SERVER_RESPONSE_DELAY, packet->getPathHashSize());
+        }
+      }
       return;
     }
 
@@ -753,6 +768,8 @@ void MyMesh::onAnonDataRecv(mesh::Packet *packet, const uint8_t *secret, const m
       sendDirect(reply, reply_path, reply_path_len, SERVER_RESPONSE_DELAY);
     } else if (route == mesh::REPLY_ROUTE_DIRECT_OUT_PATH) {
       sendDirect(reply, client->out_path, client->out_path_len, SERVER_RESPONSE_DELAY);
+    } else if (link_local) {
+      sendZeroHop(reply, SERVER_RESPONSE_DELAY);
     } else {
       sendFloodReply(reply, SERVER_RESPONSE_DELAY, packet->getPathHashSize());
     }

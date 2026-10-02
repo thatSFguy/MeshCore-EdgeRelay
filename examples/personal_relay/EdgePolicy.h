@@ -136,6 +136,9 @@ public:
 
   // Final deny guard for allowPacketForward(): true only if stock handling is permitted.
   bool checkForward(const mesh::Packet* pkt, const uint8_t* self_hash, uint8_t self_hash_len) const {
+    // Anonymous requests are only ever answered, never forwarded: stock would
+    // otherwise re-flood a flood login that did not decrypt.
+    if (pkt->getPayloadType() == PAYLOAD_TYPE_ANON_REQ) return false;
     return _valid && classify(pkt, self_hash, self_hash_len) == EDGE_STOCK;
   }
 
