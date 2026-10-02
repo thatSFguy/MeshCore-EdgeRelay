@@ -1379,7 +1379,16 @@ void MyMesh::handleEdgeCommand(char* args, char* reply) {
       mesh::Utils::printHex(Serial, edge_policy.getOwnerKey(i), PUB_KEY_SIZE);
       Serial.println();
     }
-    snprintf(reply, 160, "OK - %d owner(s)", edge_policy.getNumOwners());
+    // Short key prefixes in the reply: the reply always reaches the app, and
+    // apps may redact full-length keys. 'edge owner show <idx>' gives a full one.
+    {
+      char* p = reply;
+      p += snprintf(p, 160, "OK - %d owner(s):", edge_policy.getNumOwners());
+      for (int i = 0; i < edge_policy.getNumOwners() && (p - reply) < 145; i++) {
+        const uint8_t* k = edge_policy.getOwnerKey(i);
+        p += snprintf(p, 160 - (p - reply), " %d:%02x%02x%02x%02x", i, k[0], k[1], k[2], k[3]);
+      }
+    }
     return;
   }
 

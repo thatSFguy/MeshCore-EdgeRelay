@@ -259,6 +259,9 @@ static File openPolicyRead(FILESYSTEM* fs) {
 
 static File openPolicyWrite(FILESYSTEM* fs) {
 #if defined(NRF52_PLATFORM) || defined(STM32_PLATFORM)
+  // FILE_O_WRITE appends on Adafruit LittleFS: remove first, as ClientACL,
+  // IdentityStore and CommonCLI do, or every save stacks another copy.
+  fs->remove(EDGE_POLICY_FILE);
   return fs->open(EDGE_POLICY_FILE, FILE_O_WRITE);
 #elif defined(RP2040_PLATFORM)
   return fs->open(EDGE_POLICY_FILE, "w");
@@ -301,8 +304,7 @@ bool EdgePolicy::parseHome(const char* args) {
   return setHome(prefix, hex_len / 2, (int) vals[0], (int) vals[1], (int) vals[2]);
 }
 
-bool EdgePolicy::load(FILESYSTEM* fs) {
-  _valid = false;
+void EdgePolicy::resetConfig() {
   _num_owners = 0;
   _num_channels = 0;
   _mirror_adverts = false;
@@ -310,7 +312,18 @@ bool EdgePolicy::load(FILESYSTEM* fs) {
   _echo_suppress = true;
   _echo_wait = EDGE_ECHO_WAIT_DEFAULT;
   _home_prefix_len = 0;
+}
 
+bool EdgePolicy::load(FILESYSTEM* fs) {
+  _valid = false;
+  resetConfig();
+  bool ok = parseFile(fs);
+  if (!ok) resetConfig();   // fail closed with nothing half-loaded
+  _valid = ok;
+  return ok;
+}
+
+bool EdgePolicy::parseFile(FILESYSTEM* fs) {
   File f = openPolicyRead(fs);
   if (!f) return false;
 
@@ -328,6 +341,11 @@ bool EdgePolicy::load(FILESYSTEM* fs) {
         if (!got_magic) {
           if (strcmp(line, "ER1") != 0) { f.close(); return false; }
           got_magic = true;
+        } else if (strcmp(line, "ER1") == 0) {
+          // A later header: older firmware appended each save on nRF52
+          // instead of replacing the file. Every save wrote a complete copy,
+          // so the last block is the newest; start over from here.
+          resetConfig();
         } else if (memcmp(line, "owner ", 6) == 0) {
           uint8_t key[PUB_KEY_SIZE];
           if (strlen(line + 6) != PUB_KEY_SIZE * 2 || !mesh::Utils::fromHex(key, PUB_KEY_SIZE, line + 6)) {
@@ -365,9 +383,7 @@ bool EdgePolicy::load(FILESYSTEM* fs) {
     // truncated directive will simply fail to match and invalidate the file
   }
   f.close();
-  if (!got_magic) return false;
-  _valid = true;
-  return true;
+  return got_magic;
 }
 
 bool EdgePolicy::save(FILESYSTEM* fs) {

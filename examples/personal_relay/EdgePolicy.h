@@ -76,6 +76,9 @@ class EdgePolicy {
   uint8_t _home_timeout;  // minutes without a strong home sample -> away
   bool _valid;            // false -> fail closed (receive-only)
 
+  void resetConfig();               // all settings back to defaults (not _valid)
+  bool parseFile(FILESYSTEM* fs);   // read EDGE_POLICY_FILE into the settings
+
   // sliding-window rate limiter for local copies
   uint32_t _rl_start_ms;
   uint16_t _rl_count;
