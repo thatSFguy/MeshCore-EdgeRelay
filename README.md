@@ -90,8 +90,9 @@ edge owner show <idx>        - show one owner pubkey in the reply
 edge owner add <64 hex>      - add owner, save
 edge owner del <64 hex>      - remove owner, save
 edge chan list               - list mirrored channel hashes
-edge chan add <2 hex>        - add channel, save
-edge chan del <2 hex>        - remove channel, save
+edge chan add <ch>           - add channel, save
+edge chan del <ch>           - remove channel, save
+  <ch> = 2 hex channel hash, channel key (32/64 hex or base64), or 'public'
 edge opt mirror_adverts 0|1  - remote advert mirroring, save (default 0)
 edge opt fwd_acks 0|1        - ACK forwarding, save (default 0)
 ```
