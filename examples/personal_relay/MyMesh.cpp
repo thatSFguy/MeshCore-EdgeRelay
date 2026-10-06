@@ -1265,6 +1265,66 @@ void MyMesh::clearStats() {
   ((SimpleMeshTables *)getTables())->resetStats();
 }
 
+// Public channel PSK, as shipped in the companion firmware.
+#define EDGE_PUBLIC_PSK  "izOH6cXN6mrJ5e26oRXNcg=="
+
+static int b64Value(char c) {
+  if (c >= 'A' && c <= 'Z') return c - 'A';
+  if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+  if (c >= '0' && c <= '9') return c - '0' + 52;
+  if (c == '+' || c == '-') return 62;
+  if (c == '/' || c == '_') return 63;
+  return -1;
+}
+
+// Decodes standard or URL-safe base64 (padding optional). Returns byte count, or -1 on bad input.
+static int decodeBase64(const char* src, uint8_t* dest, int dest_max) {
+  uint32_t acc = 0;
+  int bits = 0, n = 0;
+  for (; *src && *src != '='; src++) {
+    int v = b64Value(*src);
+    if (v < 0) return -1;
+    acc = (acc << 6) | v;
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      if (n >= dest_max) return -1;
+      dest[n++] = (uint8_t)(acc >> bits);
+    }
+  }
+  while (*src == '=') src++;
+  return *src == 0 ? n : -1;
+}
+
+static bool isHexString(const char* s) {
+  for (; *s; s++) {
+    if (!((*s >= '0' && *s <= '9') || (*s >= 'a' && *s <= 'f') || (*s >= 'A' && *s <= 'F'))) return false;
+  }
+  return true;
+}
+
+// Accepts a channel hash (2 hex chars), a channel key (32/64 hex chars, or base64),
+// or "public". Keys are reduced to the 1-byte wire hash: first byte of SHA-256(key).
+static bool parseChannelHash(const char* arg, uint8_t& hash) {
+  if (strcmp(arg, "public") == 0) arg = EDGE_PUBLIC_PSK;
+
+  int len = strlen(arg);
+  if (len == 2) return isHexString(arg) && mesh::Utils::fromHex(&hash, 1, arg);
+
+  uint8_t key[32];
+  int key_len;
+  if ((len == 32 || len == 64) && isHexString(arg)) {
+    mesh::Utils::fromHex(key, len / 2, arg);
+    key_len = len / 2;
+  } else {
+    key_len = decodeBase64(arg, key, sizeof(key));
+  }
+  if (key_len != 16 && key_len != 32) return false;
+
+  mesh::Utils::sha256(&hash, 1, key, key_len);
+  return true;
+}
+
 void MyMesh::handleEdgeCommand(char* args, char* reply) {
   while (*args == ' ') args++;
 
@@ -1275,8 +1335,9 @@ void MyMesh::handleEdgeCommand(char* args, char* reply) {
     Serial.println("edge owner add <64 hex>      - add owner, save");
     Serial.println("edge owner del <64 hex>      - remove owner, save");
     Serial.println("edge chan list               - list mirrored channel hashes");
-    Serial.println("edge chan add <2 hex>        - add channel, save");
-    Serial.println("edge chan del <2 hex>        - remove channel, save");
+    Serial.println("edge chan add <ch>           - add channel, save");
+    Serial.println("edge chan del <ch>           - remove channel, save");
+    Serial.println("  <ch> = 2 hex hash, channel key (hex or base64), or 'public'");
     Serial.println("edge opt mirror_adverts 0|1  - remote advert mirroring, save");
     Serial.println("edge opt fwd_acks 0|1        - ACK forwarding, save");
     strcpy(reply, "OK");
@@ -1375,15 +1436,15 @@ void MyMesh::handleEdgeCommand(char* args, char* reply) {
     char* end = hex + strlen(hex);
     while (end > hex && *(end - 1) == ' ') *(--end) = 0;
     uint8_t h;
-    if (strlen(hex) != 2 || !mesh::Utils::fromHex(&h, 1, hex)) {
-      strcpy(reply, "Err - bad channel hash (need 2 hex chars)");
+    if (!parseChannelHash(hex, h)) {
+      strcpy(reply, "Err - need 2 hex hash, channel key (hex/base64), or 'public'");
       return;
     }
     bool ok = is_add ? (edge_policy.addChannel(h) >= 0) : edge_policy.removeChannel(h);
     if (ok && edge_policy.save(_fs)) {
-      strcpy(reply, is_add ? "OK - channel added" : "OK - channel removed");
+      sprintf(reply, is_add ? "OK - channel %02x added" : "OK - channel %02x removed", h);
     } else {
-      strcpy(reply, is_add ? "Err - duplicate, full, or save failed" : "Err - not found or save failed");
+      sprintf(reply, is_add ? "Err - %02x duplicate, full, or save failed" : "Err - %02x not found or save failed", h);
     }
     return;
   }
