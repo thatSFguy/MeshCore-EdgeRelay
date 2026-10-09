@@ -146,12 +146,24 @@ build_firmware() {
   # e.g: v1.0.0-abcdef
   FIRMWARE_VERSION_STRING="${FIRMWARE_VERSION}-${COMMIT_HASH}"
 
+  # personal relay: version by the MeshCore release it is based on, matching
+  # what the firmware reports (EDGE_RELAY_VERSION)
+  # e.g: v1.17.1-er-abcdef
+  if [[ "$1" == *_personal_relay ]]; then
+    UPSTREAM_VERSION=$(sed -n 's/^#define UPSTREAM_VERSION *"\(.*\)".*/\1/p' examples/personal_relay/MyMesh.h)
+    if [ -z "$UPSTREAM_VERSION" ]; then
+      echo "UPSTREAM_VERSION not found in examples/personal_relay/MyMesh.h"
+      exit 1
+    fi
+    FIRMWARE_VERSION_STRING="${UPSTREAM_VERSION}-er-${COMMIT_HASH}"
+  fi
+
   # craft filename
   # e.g: RAK_4631_Repeater-v1.0.0-SHA
   FIRMWARE_FILENAME="$1-${FIRMWARE_VERSION_STRING}"
 
   # add firmware version info to end of existing platformio build flags in environment vars
-  export PLATFORMIO_BUILD_FLAGS="${PLATFORMIO_BUILD_FLAGS} -DFIRMWARE_BUILD_DATE='\"${FIRMWARE_BUILD_DATE}\"' -DFIRMWARE_VERSION='\"${FIRMWARE_VERSION_STRING}\"'"
+  export PLATFORMIO_BUILD_FLAGS="${PLATFORMIO_BUILD_FLAGS} -DFIRMWARE_BUILD_DATE='\"${FIRMWARE_BUILD_DATE}\"' -DFIRMWARE_VERSION='\"${FIRMWARE_VERSION_STRING}\"' -DFIRMWARE_COMMIT='\"${COMMIT_HASH}\"'"
 
   # disable debug flags if requested
   disable_debug_flags
