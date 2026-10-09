@@ -57,6 +57,7 @@ code in `src/` and the stock `simple_repeater` example are untouched.
 | `handleCommand()` | New `edge` CLI for configuration over USB serial (see below). |
 | `onRecvPacket()` / `cancelEchoedForward()` | Echo suppression: owner uplinks are held briefly and cancelled if another repeater re-floods them first. |
 | `HomePresence.h` (new), `logRx()` / `loop()` | Home detection: RSSI of the configured home node pauses all relaying while parked at home. |
+| `sendOwnerRelay()`, ACK window | Owner direct messages on a stored route: re-sent unchanged toward their first hop, with the reply's last hop and its delivery ACK copied back to the owner. |
 
 ### Packet policy (default)
 
@@ -64,11 +65,13 @@ code in `src/` and the stock `simple_repeater` example are untouched.
 |---|---|---|
 | `TXT_MSG`, `REQ`, `RESPONSE`, `PATH` from a whitelisted owner (heard directly) | Forward normally | — |
 | Same, addressed to an owner (already circulating) | Re-emit locally as one zero-hop copy | — |
+| Same, from an owner, naming another first hop | — | Re-send unchanged (path untouched) so that hop can hear it; cancelled if that hop forwards it first |
+| Same, addressed to an owner, last hop (empty path) | — | Re-emit locally as one zero-hop copy |
 | Same, unrelated to owners | Drop | Drop |
 | `GRP_TXT` / `GRP_DATA` on a configured channel | Owner's own transmission: forward; inbound: local copy | Forward if channel configured |
 | `ADVERT` from an owner | Drop (never export owner adverts) | — |
 | `ADVERT` from anyone else | Drop (mirroring opt-in only, off by default) | — |
-| `ACK` | Drop (forwarding opt-in only, off by default) | Same |
+| `ACK` | Drop (forwarding opt-in only, off by default) | Same; a zero-hop ACK within 60 s of carrying an owner message is copied locally (its delivery receipt) |
 | `ANON_REQ` | Link-local only: password login heard directly (empty path, addressed to this node); never forwarded | Link-local zero-hop only: info queries, password login, and the resulting admin session from authenticated clients (stock crypto auth still enforced on every packet; multi-hop stays dropped) |
 | `TRACE`, `MULTIPART`, `RAW_CUSTOM`, unknown | Drop | Drop |
 | `CONTROL` | Drop | Drop (except link-local zero-hop, e.g. discovery replies, which can't propagate) |
@@ -129,8 +132,10 @@ Repeat for each companion you own (up to 8).
 
 ### 3. Mirror group channels (optional)
 
-To also relay a group channel for your companions, add its 1-byte channel
-hash: `edge chan add <2 hex>`. Check with `edge chan list`.
+To also relay a group channel for your companions, add it with
+`edge chan add public`, or paste the channel key (hex or base64) for any
+other channel. Check with `edge chan list`. Channel messages, including
+your own posts, are dropped until their channel is added.
 
 ### 4. Echo suppression (on by default)
 
@@ -216,7 +221,21 @@ timeout longer than its advert interval.
 
 `edge status` shows the policy, echo and home state, and the counters
 (`uplink_fwd`, `echo_cancel`, `home_held`, `local_copy`, `direct_fwd`,
-`dropped`).
+`owner_direct`, `region_block`, `fwd_block`, `dropped`). The reply line uses
+short names: `up`, `echo`, `copy`, `dfwd`, `odir`, `held`, `rblk`, `fblk`,
+`drop`.
+
+- `owner_direct`: your direct messages on a stored route that the relay
+  re-sent toward their first hop.
+- `region_block`: forwards the relay approved but the stock repeater refused
+  because the flood's region (scope) is unknown here. Add the region with the
+  stock `region` commands.
+- `fwd_block`: approved forwards refused by other stock checks (hop limit,
+  loop detection, or `set repeat off`).
+
+To test while parked at home, `edge home override 30` relays normally for
+30 minutes (1–240); `edge home override off` ends it early. It is not
+saved, so a reboot also ends it.
 
 ## `edge` command reference
 
@@ -232,6 +251,7 @@ edge chan del <ch>           - remove channel, save
   <ch> = 2 hex channel hash, channel key (32/64 hex or base64), or 'public'
 edge opt mirror_adverts 0|1  - remote advert mirroring, save (default 0)
 edge opt fwd_acks 0|1        - ACK forwarding, save (default 0)
+edge opt owner_direct 0|1    - carry owner direct msgs on stored routes, save (default 1)
 edge echo                    - show echo suppression settings + counter
 edge echo on|off             - echo suppression, save (default on)
 edge echo wait <0-20>        - extra uplink hold, in packet airtimes, save (default 4)
@@ -239,11 +259,14 @@ edge home                    - show home detection state + live RSSI
 edge home set <hex> [enter exit timeout_min]
                              - home node pubkey or prefix, save (defaults -60 -80 10)
 edge home off                - disable home detection, save (default off)
+edge home override <1-240>   - relay normally while home for N minutes (not saved)
+edge home override off       - end the override now
 ```
 
 Configuration persists to `/edge_policy` on the device filesystem. Older
-firmware does not know the `echo_*` / `home` directives and treats such a
-file as invalid (receive-only), so after a downgrade, re-run your setup.
+firmware does not know the `echo_*` / `home` / `owner_direct` directives and
+treats such a file as invalid (receive-only), so after a downgrade, re-run
+your setup.
 
 ## Build and flash
 

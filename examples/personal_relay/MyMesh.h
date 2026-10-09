@@ -118,6 +118,9 @@ class MyMesh : public mesh::Mesh, public CommonCLICallbacks {
   EdgePolicy edge_policy;      // directional good-citizen policy for this edge relay
   EdgePolicyStats edge_stats;
   HomePresence home_presence;  // runtime "parked at home" state (config lives in edge_policy)
+  unsigned long home_override_until;  // relay normally while at home until this millis() (test mode)
+  bool home_override;                 // home override armed (not persisted)
+  unsigned long ack_window_until;     // copy zero-hop ACKs locally until this millis()
   uint32_t pending_discover_tag;
   unsigned long pending_discover_until;
   bool region_load_active;
@@ -248,7 +251,9 @@ public:
   void handleCommand(uint32_t sender_timestamp, char* command, char* reply);
   void handleEdgeCommand(char* args, char* reply);
   bool cancelEchoedForward(const mesh::Packet* echo);
-  bool isHomeHeld() const { return edge_policy.isHomeEnabled() && home_presence.isHome(); }
+  bool isHomeOverride() const { return home_override && (long)(home_override_until - millis()) > 0; }
+  bool isHomeHeld() const { return edge_policy.isHomeEnabled() && home_presence.isHome() && !isHomeOverride(); }
+  void sendOwnerRelay(const mesh::Packet* pkt);
   void loop();
 
 #if defined(WITH_BRIDGE)

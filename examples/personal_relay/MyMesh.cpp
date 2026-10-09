@@ -432,13 +432,27 @@ void MyMesh::sendFloodReply(mesh::Packet* packet, unsigned long delay_millis, ui
 }
 
 bool MyMesh::allowPacketForward(const mesh::Packet *packet) {
-  if (_prefs.disable_fwd) return false;
+  // Edge-relay final deny guard: never forward anything the directional policy
+  // did not approve, even if it somehow reached stock handling. Checked first,
+  // so the counters below only see forwards the policy wanted.
+  uint8_t self_hash[8];
+  uint8_t hash_len = packet->getPathHashSize();
+  if (hash_len > sizeof(self_hash)) hash_len = sizeof(self_hash);
+  self_id.copyHashTo(self_hash, hash_len);
+  if (!edge_policy.checkForward(packet, self_hash, hash_len)) return false;
+
+  if (_prefs.disable_fwd) {
+    edge_stats.n_fwd_block++;
+    return false;
+  }
   if (packet->isRouteFlood()
       && mesh::isFloodHopLimitExceeded(packet, _prefs.flood_max, _prefs.flood_max_unscoped, _prefs.flood_max_advert)) {
+    edge_stats.n_fwd_block++;
     return false;
   }
   if (packet->isRouteFlood() && recv_pkt_region == NULL) {
     MESH_DEBUG_PRINTLN("allowPacketForward: unknown transport code, or wildcard not allowed for FLOOD packet");
+    edge_stats.n_region_block++;
     return false;
   }
   if (packet->isRouteFlood() && _prefs.loop_detect != LOOP_DETECT_OFF) {
@@ -452,16 +466,10 @@ bool MyMesh::allowPacketForward(const mesh::Packet *packet) {
     }
     if (isLooped(packet, maximums)) {
       MESH_DEBUG_PRINTLN("allowPacketForward: FLOOD packet loop detected!");
+      edge_stats.n_fwd_block++;
       return false;
     }
   }
-  // Edge-relay final deny guard: never forward anything the directional policy
-  // did not approve, even if it somehow reached stock handling.
-  uint8_t self_hash[8];
-  uint8_t hash_len = packet->getPathHashSize();
-  if (hash_len > sizeof(self_hash)) hash_len = sizeof(self_hash);
-  self_id.copyHashTo(self_hash, hash_len);
-  if (!edge_policy.checkForward(packet, self_hash, hash_len)) return false;
   // Parked at home: the base station covers the owner, so forward nothing.
   if (isHomeHeld()) {
     edge_stats.n_home_held++;
@@ -605,14 +613,40 @@ mesh::DispatcherAction MyMesh::onRecvPacket(mesh::Packet* pkt) {
     }
 
     // Echo suppression: a flood that already carries a path is the mesh
-    // repeating something. If it matches an uplink forward still waiting in our
-    // send queue, another repeater heard the owner without us, so our copy
-    // would only add airtime. Cancel it, then let the echo be classified as usual
-    // (it is already in the seen-table, so it yields nothing further).
-    if (edge_policy.getEchoSuppress() && pkt->isRouteFlood() && pkt->getPathHashCount() > 0
+    // repeating something, and a direct packet may be the next hop forwarding
+    // an owner packet we are about to re-send. If it matches a forward still
+    // waiting in our send queue, another repeater heard the owner without us,
+    // so our copy would only add airtime. Cancel it, then let the echo be
+    // classified as usual (it is already in the seen-table, so it yields
+    // nothing further).
+    if (edge_policy.getEchoSuppress()
+        && ((pkt->isRouteFlood() && pkt->getPathHashCount() > 0) || pkt->isRouteDirect())
         && cancelEchoedForward(pkt)) {
       edge_stats.n_echo_cancel++;
-      MESH_DEBUG_PRINTLN("edge: uplink forward cancelled, echo heard");
+      MESH_DEBUG_PRINTLN("edge: owner forward cancelled, echo heard");
+    }
+
+    // Shortly after carrying an owner message: a zero-hop ACK is most likely
+    // the last hop of its delivery receipt. ACKs name no destination, so this
+    // time window is the only way to tell; copy it locally for the owner.
+    if (pkt->isRouteDirect() && pkt->getPathHashCount() == 0 && pkt->getPayloadType() == PAYLOAD_TYPE_ACK
+        && edge_policy.getOwnerDirect() && (long)(ack_window_until - millis()) > 0
+        && !getTables()->wasSeen(pkt)) {
+      getTables()->markSeen(pkt);
+      if (isHomeHeld()) {
+        edge_stats.n_home_held++;
+      } else if (edge_policy.tryLocalCopy(millis())) {
+        mesh::Packet* copy = obtainNewPacket();
+        if (copy) {
+          copy->header = pkt->header;
+          copy->transport_codes[0] = copy->transport_codes[1] = 0;
+          copy->payload_len = pkt->payload_len;
+          memcpy(copy->payload, pkt->payload, pkt->payload_len);
+          sendZeroHop(copy, getRetransmitDelay(copy));
+          edge_stats.n_local_copy++;
+        }
+      }
+      return ACTION_RELEASE;
     }
 
     uint8_t self_hash[8];
@@ -657,12 +691,26 @@ mesh::DispatcherAction MyMesh::onRecvPacket(mesh::Packet* pkt) {
       }
       return ACTION_RELEASE;
     }
+    if (edge_action == EDGE_OWNER_RELAY) {
+      if (!getTables()->wasSeen(pkt)) {
+        getTables()->markSeen(pkt);
+        if (isHomeHeld()) {
+          edge_stats.n_home_held++;
+        } else {
+          sendOwnerRelay(pkt);
+        }
+      }
+      return ACTION_RELEASE;
+    }
     // EDGE_STOCK: fall through to normal handling below.
     if (pkt->getPayloadType() == PAYLOAD_TYPE_ANON_REQ) {
       // link-local login / info request: answered, never forwarded
     } else if (pkt->isRouteFlood() && pkt->getPathHashCount() == 0) {
       edge_stats.n_owner_uplink++;
       is_owner_uplink = true;
+      if (pkt->getPayloadType() == PAYLOAD_TYPE_TXT_MSG || pkt->getPayloadType() == PAYLOAD_TYPE_REQ) {
+        ack_window_until = millis() + EDGE_ACK_WINDOW_MS;   // a delivery receipt may follow
+      }
     } else if (pkt->isRouteDirect() && pkt->getPathHashCount() > 0) {
       edge_stats.n_direct_fwd++;
     }
@@ -693,13 +741,43 @@ mesh::DispatcherAction MyMesh::onRecvPacket(mesh::Packet* pkt) {
   return action;
 }
 
+void MyMesh::sendOwnerRelay(const mesh::Packet* pkt) {
+  mesh::Packet* copy = obtainNewPacket();
+  if (copy == NULL) {
+    MESH_DEBUG_PRINTLN("edge: packet pool empty, owner relay dropped");
+    edge_stats.n_dropped++;
+    return;
+  }
+  // An exact copy: same route type, transport codes and path, so the named
+  // first hop handles it as if it had heard the owner. Nothing is re-signed,
+  // re-encrypted, or added to the path; the mesh learns no route through us.
+  copy->header = pkt->header;
+  copy->transport_codes[0] = pkt->transport_codes[0];
+  copy->transport_codes[1] = pkt->transport_codes[1];
+  copy->path_len = mesh::Packet::copyPath(copy->path, pkt->path, pkt->path_len);
+  copy->payload_len = pkt->payload_len;
+  memcpy(copy->payload, pkt->payload, pkt->payload_len);
+
+  // Held like an uplink, so the named hop gets the chance to forward the owner's
+  // original first; hearing that forward cancels this copy (cancelEchoedForward).
+  uint32_t d = getDirectRetransmitDelay(copy);
+  if (edge_policy.getEchoSuppress()) {
+    d += _radio->getEstAirtimeFor(copy->getRawLength()) * edge_policy.getEchoWait();
+  }
+  sendPacket(copy, 0, d);
+  edge_stats.n_owner_direct++;
+  ack_window_until = millis() + EDGE_ACK_WINDOW_MS;
+}
+
 bool MyMesh::cancelEchoedForward(const mesh::Packet* echo) {
-  // Only flood packets waiting in our own send queue are candidates: those are
-  // forwards (or originations) not yet on air. Zero-hop local copies are DIRECT
-  // and are never cancelled -- the owner may not hear the echoing repeater.
+  // Candidates are packets waiting in our own send queue, not yet on air:
+  // flood forwards, and direct packets with a path (owner relays and owner
+  // direct forwards). Zero-hop local copies are DIRECT with an empty path and
+  // are never cancelled -- the owner may not hear the echoing repeater.
   for (int i = 0; i < _mgr->getOutboundTotal(); i++) {
     mesh::Packet* q = _mgr->getOutboundByIdx(i);
-    if (q == NULL || !q->isRouteFlood()) continue;
+    if (q == NULL) continue;
+    if (!q->isRouteFlood() && !(q->isRouteDirect() && q->getPathHashCount() > 0)) continue;
     if (q->getPayloadType() != echo->getPayloadType()) continue;
     if (q->payload_len != echo->payload_len) continue;
     if (memcmp(q->payload, echo->payload, q->payload_len) != 0) continue;
@@ -1092,6 +1170,9 @@ MyMesh::MyMesh(mesh::MainBoard &board, mesh::Radio &radio, mesh::MillisecondCloc
 
   pending_discover_tag = 0;
   pending_discover_until = 0;
+  home_override = false;
+  home_override_until = 0;
+  ack_window_until = 0;
 
   memset(default_scope.key, 0, sizeof(default_scope.key));
 }
@@ -1420,37 +1501,49 @@ void MyMesh::handleEdgeCommand(char* args, char* reply) {
     Serial.println("  <ch> = 2 hex hash, channel key (hex or base64), or 'public'");
     Serial.println("edge opt mirror_adverts 0|1  - remote advert mirroring, save");
     Serial.println("edge opt fwd_acks 0|1        - ACK forwarding, save");
+    Serial.println("edge opt owner_direct 0|1    - carry owner direct msgs on stored routes, save");
     Serial.println("edge echo                    - show echo suppression settings");
     Serial.println("edge echo on|off             - cancel uplink if mesh echoes it first, save");
     Serial.println("edge echo wait <0-20>        - extra uplink hold in airtimes, save");
     Serial.println("edge home                    - show home detection state");
     Serial.println("edge home set <hex> [enter exit timeout_min] - home node pubkey (prefix), save");
     Serial.println("edge home off                - disable home detection, save");
+    Serial.println("edge home override <1-240>   - relay normally while home for N minutes (test)");
+    Serial.println("edge home override off       - end the override now");
     strcpy(reply, "OK");
     return;
   }
 
   if (strcmp(args, "status") == 0) {
     Serial.printf("edge: policy %s\n", edge_policy.isValid() ? "OK" : "INVALID (receive-only)");
-    Serial.printf("  owners: %d  channels: %d  mirror_adverts: %d  fwd_acks: %d\n",
+    Serial.printf("  owners: %d  channels: %d  mirror_adverts: %d  fwd_acks: %d  owner_direct: %d\n",
                   edge_policy.getNumOwners(), edge_policy.getNumChannels(),
-                  edge_policy.getMirrorAdverts() ? 1 : 0, edge_policy.getFwdAcks() ? 1 : 0);
+                  edge_policy.getMirrorAdverts() ? 1 : 0, edge_policy.getFwdAcks() ? 1 : 0,
+                  edge_policy.getOwnerDirect() ? 1 : 0);
     Serial.printf("  echo_suppress: %d  echo_wait: %d\n",
                   edge_policy.getEchoSuppress() ? 1 : 0, (int) edge_policy.getEchoWait());
-    Serial.printf("  home: %s\n", !edge_policy.isHomeEnabled() ? "off" : (isHomeHeld() ? "AT HOME (paused)" : "away"));
+    Serial.printf("  home: %s\n", !edge_policy.isHomeEnabled() ? "off"
+                  : isHomeHeld() ? "AT HOME (paused)"
+                  : (home_presence.isHome() && isHomeOverride()) ? "AT HOME (override, relaying)" : "away");
     Serial.printf("  uplink_fwd: %lu  echo_cancel: %lu  home_held: %lu  local_copy: %lu  direct_fwd: %lu  dropped: %lu\n",
                   (unsigned long) edge_stats.n_owner_uplink, (unsigned long) edge_stats.n_echo_cancel,
                   (unsigned long) edge_stats.n_home_held,
                   (unsigned long) edge_stats.n_local_copy,
                   (unsigned long) edge_stats.n_direct_fwd, (unsigned long) edge_stats.n_dropped);
+    Serial.printf("  owner_direct: %lu  region_block: %lu  fwd_block: %lu\n",
+                  (unsigned long) edge_stats.n_owner_direct, (unsigned long) edge_stats.n_region_block,
+                  (unsigned long) edge_stats.n_fwd_block);
     // Compact summary in the reply as well: the reply channel always reaches
     // the terminal, Serial block output may not on some setups.
-    snprintf(reply, 160, "OK - valid:%d owners:%d ch:%d up:%lu echo:%lu copy:%lu dfwd:%lu drop:%lu",
+    snprintf(reply, 160, "OK - valid:%d owners:%d ch:%d up:%lu echo:%lu copy:%lu dfwd:%lu odir:%lu drop:%lu"
+             " held:%lu rblk:%lu fblk:%lu",
              edge_policy.isValid() ? 1 : 0,
              edge_policy.getNumOwners(), edge_policy.getNumChannels(),
              (unsigned long) edge_stats.n_owner_uplink, (unsigned long) edge_stats.n_echo_cancel,
              (unsigned long) edge_stats.n_local_copy,
-             (unsigned long) edge_stats.n_direct_fwd, (unsigned long) edge_stats.n_dropped);
+             (unsigned long) edge_stats.n_direct_fwd, (unsigned long) edge_stats.n_owner_direct,
+             (unsigned long) edge_stats.n_dropped, (unsigned long) edge_stats.n_home_held,
+             (unsigned long) edge_stats.n_region_block, (unsigned long) edge_stats.n_fwd_block);
     return;
   }
 
@@ -1558,8 +1651,11 @@ void MyMesh::handleEdgeCommand(char* args, char* reply) {
     } else if (memcmp(rest, "fwd_acks ", 9) == 0) {
       edge_policy.setFwdAcks(rest[9] == '1');
       strcpy(reply, edge_policy.save(_fs) ? "OK" : "Err - save failed");
+    } else if (memcmp(rest, "owner_direct ", 13) == 0) {
+      edge_policy.setOwnerDirect(rest[13] == '1');
+      strcpy(reply, edge_policy.save(_fs) ? "OK" : "Err - save failed");
     } else {
-      strcpy(reply, "Err - unknown opt (mirror_adverts, fwd_acks)");
+      strcpy(reply, "Err - unknown opt (mirror_adverts, fwd_acks, owner_direct)");
     }
     return;
   }
@@ -1600,7 +1696,7 @@ void MyMesh::handleEdgeCommand(char* args, char* reply) {
     prefix_hex[show * 2] = 0;
     long age = home_presence.numSamples() > 0 ? (long)((millis() - home_presence.lastSampleMs()) / 1000) : -1;
     snprintf(reply, 160, "OK - %s node:%s enter:%d exit:%d timeout:%dm avg:%d last:%d n:%d age:%lds held:%lu",
-             home_presence.isHome() ? "HOME" : "away", prefix_hex,
+             !home_presence.isHome() ? "away" : isHomeOverride() ? "HOME(override)" : "HOME", prefix_hex,
              (int) edge_policy.getHomeEnter(), (int) edge_policy.getHomeExit(), (int) edge_policy.getHomeTimeout(),
              (int) home_presence.average(), (int) home_presence.lastRssi(), (int) home_presence.numSamples(),
              age, (unsigned long) edge_stats.n_home_held);
@@ -1614,6 +1710,28 @@ void MyMesh::handleEdgeCommand(char* args, char* reply) {
     }
     home_presence.reset();
     strcpy(reply, edge_policy.save(_fs) ? "OK - home node set" : "Err - save failed");
+    return;
+  }
+
+  if (strcmp(args, "home override off") == 0) {
+    home_override = false;
+    strcpy(reply, "OK - home override off");
+    return;
+  }
+
+  if (memcmp(args, "home override ", 14) == 0) {
+    // Test mode: relay normally while parked at home. Not saved, so a reboot
+    // (or the timer) always returns to the configured behaviour.
+    char* end;
+    long mins = strtol(args + 14, &end, 10);
+    if (end == args + 14 || *end != 0 || mins < 1 || mins > EDGE_HOME_TIMEOUT_MAX) {
+      strcpy(reply, "Err - need minutes 1-240, or 'off'");
+      return;
+    }
+    home_override = true;
+    home_override_until = millis() + (unsigned long) mins * 60000UL;
+    snprintf(reply, 160, "OK - relaying at home for %ld min%s", mins,
+             edge_policy.isHomeEnabled() ? "" : " (home detection is off anyway)");
     return;
   }
 
