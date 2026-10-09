@@ -245,6 +245,8 @@ saved, so a reboot also ends it.
 ## `edge` command reference
 
 ```
+edge help                    - command index (in the reply, so it reaches the app)
+edge help <cmd>              - usage of one command: status advert owner chan opt echo home
 edge status                  - show policy + counters
 edge advert                  - send one zero-hop advert now (same as advert.zerohop)
 edge owner list              - list owner pubkeys
@@ -255,6 +257,7 @@ edge chan list               - list mirrored channel hashes
 edge chan add <ch>           - add channel, save
 edge chan del <ch>           - remove channel, save
   <ch> = 2 hex channel hash, channel key (32/64 hex or base64), or 'public'
+edge opt                     - show option settings
 edge opt mirror_adverts 0|1  - remote advert mirroring, save (default 0)
 edge opt fwd_acks 0|1        - ACK forwarding, save (default 0)
 edge opt owner_direct 0|1    - carry owner direct msgs on stored routes, save (default 1)

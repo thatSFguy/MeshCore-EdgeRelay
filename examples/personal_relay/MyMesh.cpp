@@ -1510,6 +1510,7 @@ void MyMesh::handleEdgeCommand(char* args, char* reply) {
     Serial.println("edge chan add <ch>           - add channel, save");
     Serial.println("edge chan del <ch>           - remove channel, save");
     Serial.println("  <ch> = 2 hex hash, channel key (hex or base64), or 'public'");
+    Serial.println("edge opt                     - show option settings");
     Serial.println("edge opt mirror_adverts 0|1  - remote advert mirroring, save");
     Serial.println("edge opt fwd_acks 0|1        - ACK forwarding, save");
     Serial.println("edge opt owner_direct 0|1    - carry owner direct msgs on stored routes, save");
@@ -1521,7 +1522,32 @@ void MyMesh::handleEdgeCommand(char* args, char* reply) {
     Serial.println("edge home off                - disable home detection, save");
     Serial.println("edge home override <1-240>   - relay normally while home for N minutes (test)");
     Serial.println("edge home override off       - end the override now");
-    strcpy(reply, "OK");
+    Serial.println("edge help <cmd>              - usage of one command (fits an app reply)");
+    // The reply is all an app sees over LoRa (about 155 chars), so it gets an
+    // index here and per-command usage from 'edge help <cmd>'.
+    strcpy(reply, "edge: status advert owner chan opt echo home - 'edge help <cmd>' for usage");
+    return;
+  }
+
+  if (memcmp(args, "help ", 5) == 0) {
+    static const char* const topics[][2] = {
+      { "status", "edge status - policy, counters (up echo copy dfwd odir drop held rblk fblk)" },
+      { "advert", "edge advert - send one zero-hop advert now (same as advert.zerohop)" },
+      { "owner",  "edge owner list | show <idx> | add <64 hex> | del <64 hex>" },
+      { "chan",   "edge chan list | add <ch> | del <ch>  (ch: 2-hex hash, key in hex or base64, or public)" },
+      { "opt",    "edge opt (show) | opt mirror_adverts|fwd_acks|owner_direct 0|1" },
+      { "echo",   "edge echo | echo on|off | echo wait <0-20>" },
+      { "home",   "edge home | home set <hex> [enter exit min] | home off | home override <1-240>|off" },
+    };
+    const char* topic = args + 5;
+    while (*topic == ' ') topic++;
+    for (size_t i = 0; i < sizeof(topics) / sizeof(topics[0]); i++) {
+      if (strcmp(topic, topics[i][0]) == 0) {
+        StrHelper::strncpy(reply, topics[i][1], 150);
+        return;
+      }
+    }
+    strcpy(reply, "Err - help topics: status advert owner chan opt echo home");
     return;
   }
 
@@ -1656,6 +1682,13 @@ void MyMesh::handleEdgeCommand(char* args, char* reply) {
     } else {
       sprintf(reply, is_add ? "Err - %02x duplicate, full, or save failed" : "Err - %02x not found or save failed", h);
     }
+    return;
+  }
+
+  if (strcmp(args, "opt") == 0) {
+    snprintf(reply, 160, "OK - mirror_adverts:%d fwd_acks:%d owner_direct:%d",
+             edge_policy.getMirrorAdverts() ? 1 : 0, edge_policy.getFwdAcks() ? 1 : 0,
+             edge_policy.getOwnerDirect() ? 1 : 0);
     return;
   }
 
