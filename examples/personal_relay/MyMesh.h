@@ -37,6 +37,7 @@
 #include <helpers/RoutingPolicy.h>
 #include "RateLimiter.h"
 #include "EdgePolicy.h"
+#include "HomePresence.h"
 
 #ifdef WITH_BRIDGE
 extern AbstractBridge* bridge;
@@ -79,6 +80,19 @@ struct NeighbourInfo {
   #define FIRMWARE_VERSION   "v1.17.1"
 #endif
 
+// MeshCore release this fork is based on: src/ is unmodified from this tag.
+// Bump it when merging a newer upstream release.
+#define UPSTREAM_VERSION   "v1.17.1"
+
+// Reported version, e.g. "v1.17.1-er-1911a2f": upstream base, edge relay, commit.
+// CI's FIRMWARE_VERSION is derived from the branch name and says nothing about
+// the MeshCore base, so it is not used here; build.sh supplies FIRMWARE_COMMIT.
+#ifdef FIRMWARE_COMMIT
+  #define EDGE_RELAY_VERSION   UPSTREAM_VERSION "-er-" FIRMWARE_COMMIT
+#else
+  #define EDGE_RELAY_VERSION   UPSTREAM_VERSION "-er"
+#endif
+
 #define FIRMWARE_ROLE "repeater"
 
 #define PACKET_LOG_FILE  "/packet_log"
@@ -103,6 +117,7 @@ class MyMesh : public mesh::Mesh, public CommonCLICallbacks {
   RateLimiter discover_limiter, anon_limiter;
   EdgePolicy edge_policy;      // directional good-citizen policy for this edge relay
   EdgePolicyStats edge_stats;
+  HomePresence home_presence;  // runtime "parked at home" state (config lives in edge_policy)
   uint32_t pending_discover_tag;
   unsigned long pending_discover_until;
   bool region_load_active;
@@ -187,7 +202,7 @@ public:
 
   void begin(FILESYSTEM* fs);
   void sendNodeDiscoverReq();
-  const char* getFirmwareVer() override { return FIRMWARE_VERSION; }
+  const char* getFirmwareVer() override { return EDGE_RELAY_VERSION; }
   const char* getBuildDate() override { return FIRMWARE_BUILD_DATE; }
   const char* getRole() override { return FIRMWARE_ROLE; }
   const char* getNodeName() { return _prefs.node_name; }
@@ -232,6 +247,8 @@ public:
 
   void handleCommand(uint32_t sender_timestamp, char* command, char* reply);
   void handleEdgeCommand(char* args, char* reply);
+  bool cancelEchoedForward(const mesh::Packet* echo);
+  bool isHomeHeld() const { return edge_policy.isHomeEnabled() && home_presence.isHome(); }
   void loop();
 
 #if defined(WITH_BRIDGE)

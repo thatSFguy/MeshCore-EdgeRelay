@@ -9,6 +9,20 @@ on:
       release_title_prefix:
         required: true
         type: string
+      prerelease:
+        # publish as a pre-release instead of leaving a draft for manual review
+        required: false
+        type: boolean
+        default: false
+      release_body:
+        required: false
+        type: string
+        default: ""
+      release_tag:
+        # create a release (and this tag, at the built commit) from a branch run
+        required: false
+        type: string
+        default: ""
 
 jobs:
 
@@ -66,7 +80,8 @@ jobs:
   create-release:
     needs: build
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/') # only create release for tagged builds
+    # only create release for tagged builds, or when a release tag is given
+    if: startsWith(github.ref, 'refs/tags/') || inputs.release_tag != ''
     steps:
 
       - name: Clone Repo
@@ -74,6 +89,14 @@ jobs:
 
       - name: Setup Build Environment
         uses: ./.github/actions/setup-build-environment
+
+      - name: Version from Release Tag
+        if: inputs.release_tag != ''
+        shell: bash
+        run: |
+          # e.g: personal-relay-v1.17.1-er-abc1234 -> v1.17.1-er-abc1234
+          RELEASE_TAG="${{ inputs.release_tag }}"
+          echo "GIT_TAG_VERSION=v${RELEASE_TAG#*-v}" >> $GITHUB_ENV
 
       - name: Download All Artifacts
         uses: actions/download-artifact@v8
@@ -85,6 +108,9 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           name: "${{ inputs.release_title_prefix }} ${{ env.GIT_TAG_VERSION }}"
-          body: ""
-          draft: true
+          tag_name: ${{ inputs.release_tag || github.ref }}
+          target_commitish: ${{ github.sha }}
+          body: ${{ inputs.release_body }}
+          draft: ${{ !inputs.prerelease }}
+          prerelease: ${{ inputs.prerelease }}
           files: out/*
