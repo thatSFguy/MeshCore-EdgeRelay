@@ -52,7 +52,7 @@ code in `src/` and the stock `simple_repeater` example are untouched.
 | `EdgePolicy.h` / `EdgePolicy.cpp` (new) | Packet classifier, persisted configuration, per-class rate limiting, counters. |
 | `MyMesh::onRecvPacket()` | Every received packet is classified **before** stock handling: `EDGE_STOCK` (proceed), `EDGE_LOCAL_COPY` (re-emit once as zero-hop direct, drop original), or `EDGE_DROP`. |
 | `MyMesh::allowPacketForward()` | Final deny guard — stock forwarding is permitted only for packets the policy approved. |
-| `sendSelfAdvertisement()` | No-op. The car **never** advertises, so the mesh never learns routes through a moving node. |
+| `sendSelfAdvertisement()` | No-op. The car never advertises on its own, so the mesh never learns routes through a moving node. A zero-hop advert can be sent by hand (`advert.zerohop` / `edge advert`) so a nearby companion can add it; flood `advert` is refused. |
 | `updateAdvertTimer()` / `updateFloodAdvertTimer()` / `loop()` | Advert timers permanently stopped; timer blocks removed from `loop()`. Boot adverts are also suppressed via the no-op. |
 | `handleCommand()` | New `edge` CLI for configuration over USB serial (see below). |
 | `onRecvPacket()` / `cancelEchoedForward()` | Echo suppression: owner uplinks are held briefly and cancelled if another repeater re-floods them first. |
@@ -127,6 +127,11 @@ forwards nothing.
    public key (64 hex characters).
 2. In the serial console: `edge owner add <paste the key>`.
 3. Confirm with `edge owner list` and `edge status`.
+4. To get the relay into your app's contacts (for admin login), stand near
+   it and run `advert.zerohop` (or `edge advert`). Only companions in direct
+   radio range hear it; it is never re-flooded. If the app already knows the
+   relay and ignores the advert, run `clock sync` first: the relay's clock
+   resets on reboot, and apps ignore adverts older than the last one seen.
 
 Repeat for each companion you own (up to 8).
 
@@ -241,6 +246,7 @@ saved, so a reboot also ends it.
 
 ```
 edge status                  - show policy + counters
+edge advert                  - send one zero-hop advert now (same as advert.zerohop)
 edge owner list              - list owner pubkeys
 edge owner show <idx>        - show one owner pubkey in the reply
 edge owner add <64 hex>      - add owner, save

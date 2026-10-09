@@ -254,6 +254,7 @@ public:
   bool isHomeOverride() const { return home_override && (long)(home_override_until - millis()) > 0; }
   bool isHomeHeld() const { return edge_policy.isHomeEnabled() && home_presence.isHome() && !isHomeOverride(); }
   void sendOwnerRelay(const mesh::Packet* pkt);
+  bool sendManualZeroHopAdvert();
   void loop();
 
 #if defined(WITH_BRIDGE)

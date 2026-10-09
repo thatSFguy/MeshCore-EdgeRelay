@@ -1278,6 +1278,16 @@ void MyMesh::sendSelfAdvertisement(int delay_millis, bool flood) {
   MESH_DEBUG_PRINTLN("edge: self-advert suppressed");
 }
 
+// Manual zero-hop advert, so a nearby companion can add this node as a contact.
+// Zero-hop is never re-flooded, so the wider mesh learns no route through the
+// car; boot and timer adverts stay suppressed (sendSelfAdvertisement()).
+bool MyMesh::sendManualZeroHopAdvert() {
+  mesh::Packet *pkt = createSelfAdvert();
+  if (pkt == NULL) return false;
+  sendZeroHop(pkt, 1500);  // longer delay, give CLI response time to be sent first
+  return true;
+}
+
 void MyMesh::updateAdvertTimer() {
   next_local_advert = 0;  // edge relay never sends adverts; timer stays stopped
 }
@@ -1491,6 +1501,7 @@ void MyMesh::handleEdgeCommand(char* args, char* reply) {
 
   if (*args == 0 || strcmp(args, "help") == 0) {
     Serial.println("edge status                  - show policy + counters");
+    Serial.println("edge advert                  - send one zero-hop advert now (same as advert.zerohop)");
     Serial.println("edge owner list              - list owner pubkeys");
     Serial.println("edge owner show <idx>        - show one owner pubkey in reply");
     Serial.println("edge owner add <64 hex>      - add owner, save");
@@ -1511,6 +1522,11 @@ void MyMesh::handleEdgeCommand(char* args, char* reply) {
     Serial.println("edge home override <1-240>   - relay normally while home for N minutes (test)");
     Serial.println("edge home override off       - end the override now");
     strcpy(reply, "OK");
+    return;
+  }
+
+  if (strcmp(args, "advert") == 0) {
+    strcpy(reply, sendManualZeroHopAdvert() ? "OK - zerohop advert sent" : "Err - unable to create advert");
     return;
   }
 
@@ -1831,6 +1847,10 @@ void MyMesh::handleCommand(uint32_t sender_timestamp, char *command, char *reply
       sendNodeDiscoverReq();
       strcpy(reply, "OK - Discover sent");
     }
+  } else if (memcmp(command, "advert.zerohop", 14) == 0 && (command[14] == 0 || command[14] == ' ')) {
+    strcpy(reply, sendManualZeroHopAdvert() ? "OK - zerohop advert sent" : "Err - unable to create advert");
+  } else if (memcmp(command, "advert", 6) == 0 && (command[6] == 0 || command[6] == ' ')) {
+    strcpy(reply, "Err - edge relay never floods adverts; use advert.zerohop");
   } else if (memcmp(command, "edge ", 5) == 0 || strcmp(command, "edge") == 0) {
     handleEdgeCommand(command + (command[4] == ' ' ? 5 : 4), reply);
   } else{
