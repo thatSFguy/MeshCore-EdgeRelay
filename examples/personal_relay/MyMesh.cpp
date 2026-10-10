@@ -587,7 +587,9 @@ mesh::DispatcherAction MyMesh::onRecvPacket(mesh::Packet* pkt) {
     // still performs the real cryptographic authentication (shared-secret
     // decrypt), so a spoofed 1-byte src prefix cannot get in. This deliberately
     // ignores edge_policy validity: a bad policy file must not lock out the
-    // admin recovery path. Flood and multi-hop admin traffic stays dropped.
+    // admin recovery path. Only the path length matters (direct or flood, as
+    // for login); relayed (multi-hop) admin traffic stays dropped, and stock
+    // marks a decrypted packet do-not-retransmit, so none of it is forwarded.
     uint8_t sess_ptype = pkt->getPayloadType();
     if ((sess_ptype == PAYLOAD_TYPE_REQ || sess_ptype == PAYLOAD_TYPE_TXT_MSG ||
          sess_ptype == PAYLOAD_TYPE_RESPONSE) &&
