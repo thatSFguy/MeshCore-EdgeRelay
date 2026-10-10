@@ -432,13 +432,27 @@ void MyMesh::sendFloodReply(mesh::Packet* packet, unsigned long delay_millis, ui
 }
 
 bool MyMesh::allowPacketForward(const mesh::Packet *packet) {
-  if (_prefs.disable_fwd) return false;
+  // Edge-relay final deny guard: never forward anything the directional policy
+  // did not approve, even if it somehow reached stock handling. Checked first,
+  // so the counters below only see forwards the policy wanted.
+  uint8_t self_hash[8];
+  uint8_t hash_len = packet->getPathHashSize();
+  if (hash_len > sizeof(self_hash)) hash_len = sizeof(self_hash);
+  self_id.copyHashTo(self_hash, hash_len);
+  if (!edge_policy.checkForward(packet, self_hash, hash_len)) return false;
+
+  if (_prefs.disable_fwd) {
+    edge_stats.n_fwd_block++;
+    return false;
+  }
   if (packet->isRouteFlood()
       && mesh::isFloodHopLimitExceeded(packet, _prefs.flood_max, _prefs.flood_max_unscoped, _prefs.flood_max_advert)) {
+    edge_stats.n_fwd_block++;
     return false;
   }
   if (packet->isRouteFlood() && recv_pkt_region == NULL) {
     MESH_DEBUG_PRINTLN("allowPacketForward: unknown transport code, or wildcard not allowed for FLOOD packet");
+    edge_stats.n_region_block++;
     return false;
   }
   if (packet->isRouteFlood() && _prefs.loop_detect != LOOP_DETECT_OFF) {
@@ -452,16 +466,10 @@ bool MyMesh::allowPacketForward(const mesh::Packet *packet) {
     }
     if (isLooped(packet, maximums)) {
       MESH_DEBUG_PRINTLN("allowPacketForward: FLOOD packet loop detected!");
+      edge_stats.n_fwd_block++;
       return false;
     }
   }
-  // Edge-relay final deny guard: never forward anything the directional policy
-  // did not approve, even if it somehow reached stock handling.
-  uint8_t self_hash[8];
-  uint8_t hash_len = packet->getPathHashSize();
-  if (hash_len > sizeof(self_hash)) hash_len = sizeof(self_hash);
-  self_id.copyHashTo(self_hash, hash_len);
-  if (!edge_policy.checkForward(packet, self_hash, hash_len)) return false;
   // Parked at home: the base station covers the owner, so forward nothing.
   if (isHomeHeld()) {
     edge_stats.n_home_held++;
@@ -607,14 +615,40 @@ mesh::DispatcherAction MyMesh::onRecvPacket(mesh::Packet* pkt) {
     }
 
     // Echo suppression: a flood that already carries a path is the mesh
-    // repeating something. If it matches an uplink forward still waiting in our
-    // send queue, another repeater heard the owner without us, so our copy
-    // would only add airtime. Cancel it, then let the echo be classified as usual
-    // (it is already in the seen-table, so it yields nothing further).
-    if (edge_policy.getEchoSuppress() && pkt->isRouteFlood() && pkt->getPathHashCount() > 0
+    // repeating something, and a direct packet may be the next hop forwarding
+    // an owner packet we are about to re-send. If it matches a forward still
+    // waiting in our send queue, another repeater heard the owner without us,
+    // so our copy would only add airtime. Cancel it, then let the echo be
+    // classified as usual (it is already in the seen-table, so it yields
+    // nothing further).
+    if (edge_policy.getEchoSuppress()
+        && ((pkt->isRouteFlood() && pkt->getPathHashCount() > 0) || pkt->isRouteDirect())
         && cancelEchoedForward(pkt)) {
       edge_stats.n_echo_cancel++;
-      MESH_DEBUG_PRINTLN("edge: uplink forward cancelled, echo heard");
+      MESH_DEBUG_PRINTLN("edge: owner forward cancelled, echo heard");
+    }
+
+    // Shortly after carrying an owner message: a zero-hop ACK is most likely
+    // the last hop of its delivery receipt. ACKs name no destination, so this
+    // time window is the only way to tell; copy it locally for the owner.
+    if (pkt->isRouteDirect() && pkt->getPathHashCount() == 0 && pkt->getPayloadType() == PAYLOAD_TYPE_ACK
+        && edge_policy.getOwnerDirect() && (long)(ack_window_until - millis()) > 0
+        && !getTables()->wasSeen(pkt)) {
+      getTables()->markSeen(pkt);
+      if (isHomeHeld()) {
+        edge_stats.n_home_held++;
+      } else if (edge_policy.tryLocalCopy(millis())) {
+        mesh::Packet* copy = obtainNewPacket();
+        if (copy) {
+          copy->header = pkt->header;
+          copy->transport_codes[0] = copy->transport_codes[1] = 0;
+          copy->payload_len = pkt->payload_len;
+          memcpy(copy->payload, pkt->payload, pkt->payload_len);
+          sendZeroHop(copy, getRetransmitDelay(copy));
+          edge_stats.n_local_copy++;
+        }
+      }
+      return ACTION_RELEASE;
     }
 
     uint8_t self_hash[8];
@@ -659,12 +693,26 @@ mesh::DispatcherAction MyMesh::onRecvPacket(mesh::Packet* pkt) {
       }
       return ACTION_RELEASE;
     }
+    if (edge_action == EDGE_OWNER_RELAY) {
+      if (!getTables()->wasSeen(pkt)) {
+        getTables()->markSeen(pkt);
+        if (isHomeHeld()) {
+          edge_stats.n_home_held++;
+        } else {
+          sendOwnerRelay(pkt);
+        }
+      }
+      return ACTION_RELEASE;
+    }
     // EDGE_STOCK: fall through to normal handling below.
     if (pkt->getPayloadType() == PAYLOAD_TYPE_ANON_REQ) {
       // link-local login / info request: answered, never forwarded
     } else if (pkt->isRouteFlood() && pkt->getPathHashCount() == 0) {
       edge_stats.n_owner_uplink++;
       is_owner_uplink = true;
+      if (pkt->getPayloadType() == PAYLOAD_TYPE_TXT_MSG || pkt->getPayloadType() == PAYLOAD_TYPE_REQ) {
+        ack_window_until = millis() + EDGE_ACK_WINDOW_MS;   // a delivery receipt may follow
+      }
     } else if (pkt->isRouteDirect() && pkt->getPathHashCount() > 0) {
       edge_stats.n_direct_fwd++;
     }
@@ -695,13 +743,43 @@ mesh::DispatcherAction MyMesh::onRecvPacket(mesh::Packet* pkt) {
   return action;
 }
 
+void MyMesh::sendOwnerRelay(const mesh::Packet* pkt) {
+  mesh::Packet* copy = obtainNewPacket();
+  if (copy == NULL) {
+    MESH_DEBUG_PRINTLN("edge: packet pool empty, owner relay dropped");
+    edge_stats.n_dropped++;
+    return;
+  }
+  // An exact copy: same route type, transport codes and path, so the named
+  // first hop handles it as if it had heard the owner. Nothing is re-signed,
+  // re-encrypted, or added to the path; the mesh learns no route through us.
+  copy->header = pkt->header;
+  copy->transport_codes[0] = pkt->transport_codes[0];
+  copy->transport_codes[1] = pkt->transport_codes[1];
+  copy->path_len = mesh::Packet::copyPath(copy->path, pkt->path, pkt->path_len);
+  copy->payload_len = pkt->payload_len;
+  memcpy(copy->payload, pkt->payload, pkt->payload_len);
+
+  // Held like an uplink, so the named hop gets the chance to forward the owner's
+  // original first; hearing that forward cancels this copy (cancelEchoedForward).
+  uint32_t d = getDirectRetransmitDelay(copy);
+  if (edge_policy.getEchoSuppress()) {
+    d += _radio->getEstAirtimeFor(copy->getRawLength()) * edge_policy.getEchoWait();
+  }
+  sendPacket(copy, 0, d);
+  edge_stats.n_owner_direct++;
+  ack_window_until = millis() + EDGE_ACK_WINDOW_MS;
+}
+
 bool MyMesh::cancelEchoedForward(const mesh::Packet* echo) {
-  // Only flood packets waiting in our own send queue are candidates: those are
-  // forwards (or originations) not yet on air. Zero-hop local copies are DIRECT
-  // and are never cancelled -- the owner may not hear the echoing repeater.
+  // Candidates are packets waiting in our own send queue, not yet on air:
+  // flood forwards, and direct packets with a path (owner relays and owner
+  // direct forwards). Zero-hop local copies are DIRECT with an empty path and
+  // are never cancelled -- the owner may not hear the echoing repeater.
   for (int i = 0; i < _mgr->getOutboundTotal(); i++) {
     mesh::Packet* q = _mgr->getOutboundByIdx(i);
-    if (q == NULL || !q->isRouteFlood()) continue;
+    if (q == NULL) continue;
+    if (!q->isRouteFlood() && !(q->isRouteDirect() && q->getPathHashCount() > 0)) continue;
     if (q->getPayloadType() != echo->getPayloadType()) continue;
     if (q->payload_len != echo->payload_len) continue;
     if (memcmp(q->payload, echo->payload, q->payload_len) != 0) continue;
@@ -1094,6 +1172,9 @@ MyMesh::MyMesh(mesh::MainBoard &board, mesh::Radio &radio, mesh::MillisecondCloc
 
   pending_discover_tag = 0;
   pending_discover_until = 0;
+  home_override = false;
+  home_override_until = 0;
+  ack_window_until = 0;
 
   memset(default_scope.key, 0, sizeof(default_scope.key));
 }
@@ -1197,6 +1278,16 @@ void MyMesh::sendSelfAdvertisement(int delay_millis, bool flood) {
   (void) delay_millis;
   (void) flood;
   MESH_DEBUG_PRINTLN("edge: self-advert suppressed");
+}
+
+// Manual zero-hop advert, so a nearby companion can add this node as a contact.
+// Zero-hop is never re-flooded, so the wider mesh learns no route through the
+// car; boot and timer adverts stay suppressed (sendSelfAdvertisement()).
+bool MyMesh::sendManualZeroHopAdvert() {
+  mesh::Packet *pkt = createSelfAdvert();
+  if (pkt == NULL) return false;
+  sendZeroHop(pkt, 1500);  // longer delay, give CLI response time to be sent first
+  return true;
 }
 
 void MyMesh::updateAdvertTimer() {
@@ -1343,6 +1434,66 @@ void MyMesh::clearStats() {
   ((SimpleMeshTables *)getTables())->resetStats();
 }
 
+// Public channel PSK, as shipped in the companion firmware.
+#define EDGE_PUBLIC_PSK  "izOH6cXN6mrJ5e26oRXNcg=="
+
+static int b64Value(char c) {
+  if (c >= 'A' && c <= 'Z') return c - 'A';
+  if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+  if (c >= '0' && c <= '9') return c - '0' + 52;
+  if (c == '+' || c == '-') return 62;
+  if (c == '/' || c == '_') return 63;
+  return -1;
+}
+
+// Decodes standard or URL-safe base64 (padding optional). Returns byte count, or -1 on bad input.
+static int decodeBase64(const char* src, uint8_t* dest, int dest_max) {
+  uint32_t acc = 0;
+  int bits = 0, n = 0;
+  for (; *src && *src != '='; src++) {
+    int v = b64Value(*src);
+    if (v < 0) return -1;
+    acc = (acc << 6) | v;
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      if (n >= dest_max) return -1;
+      dest[n++] = (uint8_t)(acc >> bits);
+    }
+  }
+  while (*src == '=') src++;
+  return *src == 0 ? n : -1;
+}
+
+static bool isHexString(const char* s) {
+  for (; *s; s++) {
+    if (!((*s >= '0' && *s <= '9') || (*s >= 'a' && *s <= 'f') || (*s >= 'A' && *s <= 'F'))) return false;
+  }
+  return true;
+}
+
+// Accepts a channel hash (2 hex chars), a channel key (32/64 hex chars, or base64),
+// or "public". Keys are reduced to the 1-byte wire hash: first byte of SHA-256(key).
+static bool parseChannelHash(const char* arg, uint8_t& hash) {
+  if (strcmp(arg, "public") == 0) arg = EDGE_PUBLIC_PSK;
+
+  int len = strlen(arg);
+  if (len == 2) return isHexString(arg) && mesh::Utils::fromHex(&hash, 1, arg);
+
+  uint8_t key[32];
+  int key_len;
+  if ((len == 32 || len == 64) && isHexString(arg)) {
+    mesh::Utils::fromHex(key, len / 2, arg);
+    key_len = len / 2;
+  } else {
+    key_len = decodeBase64(arg, key, sizeof(key));
+  }
+  if (key_len != 16 && key_len != 32) return false;
+
+  mesh::Utils::sha256(&hash, 1, key, key_len);
+  return true;
+}
+
 void MyMesh::handleEdgeCommand(char* args, char* reply) {
   while (*args == ' ') args++;
   // Trim trailing whitespace too: apps may send "edge home " (autocomplete),
@@ -1352,48 +1503,92 @@ void MyMesh::handleEdgeCommand(char* args, char* reply) {
 
   if (*args == 0 || strcmp(args, "help") == 0) {
     Serial.println("edge status                  - show policy + counters");
+    Serial.println("edge advert                  - send one zero-hop advert now (same as advert.zerohop)");
     Serial.println("edge owner list              - list owner pubkeys");
     Serial.println("edge owner show <idx>        - show one owner pubkey in reply");
     Serial.println("edge owner add <64 hex>      - add owner, save");
     Serial.println("edge owner del <64 hex>      - remove owner, save");
     Serial.println("edge chan list               - list mirrored channel hashes");
-    Serial.println("edge chan add <2 hex>        - add channel, save");
-    Serial.println("edge chan del <2 hex>        - remove channel, save");
+    Serial.println("edge chan add <ch>           - add channel, save");
+    Serial.println("edge chan del <ch>           - remove channel, save");
+    Serial.println("  <ch> = 2 hex hash, channel key (hex or base64), or 'public'");
+    Serial.println("edge opt                     - show option settings");
     Serial.println("edge opt mirror_adverts 0|1  - remote advert mirroring, save");
     Serial.println("edge opt fwd_acks 0|1        - ACK forwarding, save");
     Serial.println("edge opt flood_login 0|1     - accept flood logins heard directly, save");
+    Serial.println("edge opt owner_direct 0|1    - carry owner direct msgs on stored routes, save");
     Serial.println("edge echo                    - show echo suppression settings");
     Serial.println("edge echo on|off             - cancel uplink if mesh echoes it first, save");
     Serial.println("edge echo wait <0-20>        - extra uplink hold in airtimes, save");
     Serial.println("edge home                    - show home detection state");
     Serial.println("edge home set <hex> [enter exit timeout_min] - home node pubkey (prefix), save");
     Serial.println("edge home off                - disable home detection, save");
-    strcpy(reply, "OK");
+    Serial.println("edge home override <1-240>   - relay normally while home for N minutes (test)");
+    Serial.println("edge home override off       - end the override now");
+    Serial.println("edge help <cmd>              - usage of one command (fits an app reply)");
+    // The reply is all an app sees over LoRa (about 155 chars), so it gets an
+    // index here and per-command usage from 'edge help <cmd>'.
+    strcpy(reply, "edge: status advert owner chan opt echo home - 'edge help <cmd>' for usage");
+    return;
+  }
+
+  if (memcmp(args, "help ", 5) == 0) {
+    static const char* const topics[][2] = {
+      { "status", "edge status - policy, counters (up echo copy dfwd odir drop held rblk fblk)" },
+      { "advert", "edge advert - send one zero-hop advert now (same as advert.zerohop)" },
+      { "owner",  "edge owner list | show <idx> | add <64 hex> | del <64 hex>" },
+      { "chan",   "edge chan list | add <ch> | del <ch>  (ch: 2-hex hash, key in hex or base64, or public)" },
+      { "opt",    "edge opt (show) | opt mirror_adverts|fwd_acks|owner_direct|flood_login 0|1" },
+      { "echo",   "edge echo | echo on|off | echo wait <0-20>" },
+      { "home",   "edge home | home set <hex> [enter exit min] | home off | home override <1-240>|off" },
+    };
+    const char* topic = args + 5;
+    while (*topic == ' ') topic++;
+    for (size_t i = 0; i < sizeof(topics) / sizeof(topics[0]); i++) {
+      if (strcmp(topic, topics[i][0]) == 0) {
+        StrHelper::strncpy(reply, topics[i][1], 150);
+        return;
+      }
+    }
+    strcpy(reply, "Err - help topics: status advert owner chan opt echo home");
+    return;
+  }
+
+  if (strcmp(args, "advert") == 0) {
+    strcpy(reply, sendManualZeroHopAdvert() ? "OK - zerohop advert sent" : "Err - unable to create advert");
     return;
   }
 
   if (strcmp(args, "status") == 0) {
     Serial.printf("edge: policy %s\n", edge_policy.isValid() ? "OK" : "INVALID (receive-only)");
-    Serial.printf("  owners: %d  channels: %d  mirror_adverts: %d  fwd_acks: %d  flood_login: %d\n",
+    Serial.printf("  owners: %d  channels: %d  mirror_adverts: %d  fwd_acks: %d  owner_direct: %d  flood_login: %d\n",
                   edge_policy.getNumOwners(), edge_policy.getNumChannels(),
                   edge_policy.getMirrorAdverts() ? 1 : 0, edge_policy.getFwdAcks() ? 1 : 0,
-                  edge_policy.getFloodLogin() ? 1 : 0);
+                  edge_policy.getOwnerDirect() ? 1 : 0, edge_policy.getFloodLogin() ? 1 : 0);
     Serial.printf("  echo_suppress: %d  echo_wait: %d\n",
                   edge_policy.getEchoSuppress() ? 1 : 0, (int) edge_policy.getEchoWait());
-    Serial.printf("  home: %s\n", !edge_policy.isHomeEnabled() ? "off" : (isHomeHeld() ? "AT HOME (paused)" : "away"));
+    Serial.printf("  home: %s\n", !edge_policy.isHomeEnabled() ? "off"
+                  : isHomeHeld() ? "AT HOME (paused)"
+                  : (home_presence.isHome() && isHomeOverride()) ? "AT HOME (override, relaying)" : "away");
     Serial.printf("  uplink_fwd: %lu  echo_cancel: %lu  home_held: %lu  local_copy: %lu  direct_fwd: %lu  dropped: %lu\n",
                   (unsigned long) edge_stats.n_owner_uplink, (unsigned long) edge_stats.n_echo_cancel,
                   (unsigned long) edge_stats.n_home_held,
                   (unsigned long) edge_stats.n_local_copy,
                   (unsigned long) edge_stats.n_direct_fwd, (unsigned long) edge_stats.n_dropped);
+    Serial.printf("  owner_direct: %lu  region_block: %lu  fwd_block: %lu\n",
+                  (unsigned long) edge_stats.n_owner_direct, (unsigned long) edge_stats.n_region_block,
+                  (unsigned long) edge_stats.n_fwd_block);
     // Compact summary in the reply as well: the reply channel always reaches
     // the terminal, Serial block output may not on some setups.
-    snprintf(reply, 160, "OK - valid:%d owners:%d ch:%d up:%lu echo:%lu copy:%lu dfwd:%lu drop:%lu",
+    snprintf(reply, 160, "OK - valid:%d owners:%d ch:%d up:%lu echo:%lu copy:%lu dfwd:%lu odir:%lu drop:%lu"
+             " held:%lu rblk:%lu fblk:%lu",
              edge_policy.isValid() ? 1 : 0,
              edge_policy.getNumOwners(), edge_policy.getNumChannels(),
              (unsigned long) edge_stats.n_owner_uplink, (unsigned long) edge_stats.n_echo_cancel,
              (unsigned long) edge_stats.n_local_copy,
-             (unsigned long) edge_stats.n_direct_fwd, (unsigned long) edge_stats.n_dropped);
+             (unsigned long) edge_stats.n_direct_fwd, (unsigned long) edge_stats.n_owner_direct,
+             (unsigned long) edge_stats.n_dropped, (unsigned long) edge_stats.n_home_held,
+             (unsigned long) edge_stats.n_region_block, (unsigned long) edge_stats.n_fwd_block);
     return;
   }
 
@@ -1480,16 +1675,23 @@ void MyMesh::handleEdgeCommand(char* args, char* reply) {
     char* end = hex + strlen(hex);
     while (end > hex && *(end - 1) == ' ') *(--end) = 0;
     uint8_t h;
-    if (strlen(hex) != 2 || !mesh::Utils::fromHex(&h, 1, hex)) {
-      strcpy(reply, "Err - bad channel hash (need 2 hex chars)");
+    if (!parseChannelHash(hex, h)) {
+      strcpy(reply, "Err - need 2 hex hash, channel key (hex/base64), or 'public'");
       return;
     }
     bool ok = is_add ? (edge_policy.addChannel(h) >= 0) : edge_policy.removeChannel(h);
     if (ok && edge_policy.save(_fs)) {
-      strcpy(reply, is_add ? "OK - channel added" : "OK - channel removed");
+      sprintf(reply, is_add ? "OK - channel %02x added" : "OK - channel %02x removed", h);
     } else {
-      strcpy(reply, is_add ? "Err - duplicate, full, or save failed" : "Err - not found or save failed");
+      sprintf(reply, is_add ? "Err - %02x duplicate, full, or save failed" : "Err - %02x not found or save failed", h);
     }
+    return;
+  }
+
+  if (strcmp(args, "opt") == 0) {
+    snprintf(reply, 160, "OK - mirror_adverts:%d fwd_acks:%d owner_direct:%d flood_login:%d",
+             edge_policy.getMirrorAdverts() ? 1 : 0, edge_policy.getFwdAcks() ? 1 : 0,
+             edge_policy.getOwnerDirect() ? 1 : 0, edge_policy.getFloodLogin() ? 1 : 0);
     return;
   }
 
@@ -1501,11 +1703,14 @@ void MyMesh::handleEdgeCommand(char* args, char* reply) {
     } else if (memcmp(rest, "fwd_acks ", 9) == 0) {
       edge_policy.setFwdAcks(rest[9] == '1');
       strcpy(reply, edge_policy.save(_fs) ? "OK" : "Err - save failed");
+    } else if (memcmp(rest, "owner_direct ", 13) == 0) {
+      edge_policy.setOwnerDirect(rest[13] == '1');
+      strcpy(reply, edge_policy.save(_fs) ? "OK" : "Err - save failed");
     } else if (memcmp(rest, "flood_login ", 12) == 0) {
       edge_policy.setFloodLogin(rest[12] == '1');
       strcpy(reply, edge_policy.save(_fs) ? "OK" : "Err - save failed");
     } else {
-      strcpy(reply, "Err - unknown opt (mirror_adverts, fwd_acks, flood_login)");
+      strcpy(reply, "Err - unknown opt (mirror_adverts, fwd_acks, owner_direct, flood_login)");
     }
     return;
   }
@@ -1546,7 +1751,7 @@ void MyMesh::handleEdgeCommand(char* args, char* reply) {
     prefix_hex[show * 2] = 0;
     long age = home_presence.numSamples() > 0 ? (long)((millis() - home_presence.lastSampleMs()) / 1000) : -1;
     snprintf(reply, 160, "OK - %s node:%s enter:%d exit:%d timeout:%dm avg:%d last:%d n:%d age:%lds held:%lu",
-             home_presence.isHome() ? "HOME" : "away", prefix_hex,
+             !home_presence.isHome() ? "away" : isHomeOverride() ? "HOME(override)" : "HOME", prefix_hex,
              (int) edge_policy.getHomeEnter(), (int) edge_policy.getHomeExit(), (int) edge_policy.getHomeTimeout(),
              (int) home_presence.average(), (int) home_presence.lastRssi(), (int) home_presence.numSamples(),
              age, (unsigned long) edge_stats.n_home_held);
@@ -1560,6 +1765,28 @@ void MyMesh::handleEdgeCommand(char* args, char* reply) {
     }
     home_presence.reset();
     strcpy(reply, edge_policy.save(_fs) ? "OK - home node set" : "Err - save failed");
+    return;
+  }
+
+  if (strcmp(args, "home override off") == 0) {
+    home_override = false;
+    strcpy(reply, "OK - home override off");
+    return;
+  }
+
+  if (memcmp(args, "home override ", 14) == 0) {
+    // Test mode: relay normally while parked at home. Not saved, so a reboot
+    // (or the timer) always returns to the configured behaviour.
+    char* end;
+    long mins = strtol(args + 14, &end, 10);
+    if (end == args + 14 || *end != 0 || mins < 1 || mins > EDGE_HOME_TIMEOUT_MAX) {
+      strcpy(reply, "Err - need minutes 1-240, or 'off'");
+      return;
+    }
+    home_override = true;
+    home_override_until = millis() + (unsigned long) mins * 60000UL;
+    snprintf(reply, 160, "OK - relaying at home for %ld min%s", mins,
+             edge_policy.isHomeEnabled() ? "" : " (home detection is off anyway)");
     return;
   }
 
@@ -1659,6 +1886,10 @@ void MyMesh::handleCommand(uint32_t sender_timestamp, char *command, char *reply
       sendNodeDiscoverReq();
       strcpy(reply, "OK - Discover sent");
     }
+  } else if (memcmp(command, "advert.zerohop", 14) == 0 && (command[14] == 0 || command[14] == ' ')) {
+    strcpy(reply, sendManualZeroHopAdvert() ? "OK - zerohop advert sent" : "Err - unable to create advert");
+  } else if (memcmp(command, "advert", 6) == 0 && (command[6] == 0 || command[6] == ' ')) {
+    strcpy(reply, "Err - edge relay never floods adverts; use advert.zerohop");
   } else if (memcmp(command, "edge ", 5) == 0 || strcmp(command, "edge") == 0) {
     handleEdgeCommand(command + (command[4] == ' ' ? 5 : 4), reply);
   } else{

@@ -28,8 +28,10 @@ stock `simple_repeater` example, which is left untouched:
 ## Upstream base and versioning
 
 Based on **MeshCore v1.17.1** (tag `repeater-v1.17.1`, commit `d929643`).
-Core code in `src/` and the stock examples are unmodified from that tag;
-upstream `main` has only documentation changes since.
+Core code in `src/` and the stock examples are unmodified from that tag,
+except one STM32 build fix (`src/helpers/TxtDataHelpers.cpp`: the
+non-standard `ltoa()` replaced with `sprintf`, same output). Upstream `main`
+has only documentation changes since.
 
 The personal relay reports its version as `<upstream>-er-<commit>`, e.g.
 `v1.17.1-er-1911a2f`: the MeshCore release it is built on, `er` for edge
@@ -45,18 +47,20 @@ upstream release, bump `UPSTREAM_VERSION` in
 
 All changes are confined to `examples/personal_relay/` (plus this README,
 `build.sh`, one new build environment, and one new workflow). Core protocol
-code in `src/` and the stock `simple_repeater` example are untouched.
+code in `src/` and the stock `simple_repeater` example are untouched, apart
+from the one-line STM32 build fix noted above.
 
 | Area | Change |
 |---|---|
 | `EdgePolicy.h` / `EdgePolicy.cpp` (new) | Packet classifier, persisted configuration, per-class rate limiting, counters. |
 | `MyMesh::onRecvPacket()` | Every received packet is classified **before** stock handling: `EDGE_STOCK` (proceed), `EDGE_LOCAL_COPY` (re-emit once as zero-hop direct, drop original), or `EDGE_DROP`. |
 | `MyMesh::allowPacketForward()` | Final deny guard — stock forwarding is permitted only for packets the policy approved. |
-| `sendSelfAdvertisement()` | No-op. The car **never** advertises, so the mesh never learns routes through a moving node. |
+| `sendSelfAdvertisement()` | No-op. The car never advertises on its own, so the mesh never learns routes through a moving node. A zero-hop advert can be sent by hand (`advert.zerohop` / `edge advert`) so a nearby companion can add it; flood `advert` is refused. |
 | `updateAdvertTimer()` / `updateFloodAdvertTimer()` / `loop()` | Advert timers permanently stopped; timer blocks removed from `loop()`. Boot adverts are also suppressed via the no-op. |
 | `handleCommand()` | New `edge` CLI for configuration over USB serial (see below). |
 | `onRecvPacket()` / `cancelEchoedForward()` | Echo suppression: owner uplinks are held briefly and cancelled if another repeater re-floods them first. |
 | `HomePresence.h` (new), `logRx()` / `loop()` | Home detection: RSSI of the configured home node pauses all relaying while parked at home. |
+| `sendOwnerRelay()`, ACK window | Owner direct messages on a stored route: re-sent unchanged toward their first hop, with the reply's last hop and its delivery ACK copied back to the owner. |
 
 ### Packet policy (default)
 
@@ -64,11 +68,13 @@ code in `src/` and the stock `simple_repeater` example are untouched.
 |---|---|---|
 | `TXT_MSG`, `REQ`, `RESPONSE`, `PATH` from a whitelisted owner (heard directly) | Forward normally | — |
 | Same, addressed to an owner (already circulating) | Re-emit locally as one zero-hop copy | — |
+| Same, from an owner, naming another first hop | — | Re-send unchanged (path untouched) so that hop can hear it; cancelled if that hop forwards it first |
+| Same, addressed to an owner, last hop (empty path) | — | Re-emit locally as one zero-hop copy |
 | Same, unrelated to owners | Drop | Drop |
 | `GRP_TXT` / `GRP_DATA` on a configured channel | Owner's own transmission: forward; inbound: local copy | Forward if channel configured |
 | `ADVERT` from an owner | Drop (never export owner adverts) | — |
 | `ADVERT` from anyone else | Drop (mirroring opt-in only, off by default) | — |
-| `ACK` | Drop (forwarding opt-in only, off by default) | Same |
+| `ACK` | Drop (forwarding opt-in only, off by default) | Same; a zero-hop ACK within 60 s of carrying an owner message is copied locally (its delivery receipt) |
 | `ANON_REQ` | Drop; opt-in (`edge opt flood_login 1`): password login heard directly (empty path, addressed to this node). Never forwarded | Link-local zero-hop only: info queries, password login, and the resulting admin session from authenticated clients (stock crypto auth still enforced on every packet; multi-hop stays dropped) |
 | `TRACE`, `MULTIPART`, `RAW_CUSTOM`, unknown | Drop | Drop |
 | `CONTROL` | Drop | Drop (except link-local zero-hop, e.g. discovery replies, which can't propagate) |
@@ -98,7 +104,7 @@ Notes:
   so the node cannot be administered through the wider mesh. USB serial
   remains available as the primary console.
 - Logins the app sends as a flood (it does when it has no stored path, which
-  is usual since this node never advertises) are dropped by default, to keep
+  is usual since this node does not advertise on its own) are dropped by default, to keep
   flooding to a minimum. `edge opt flood_login 1` accepts them when heard
   directly (empty path, addressed to this node); they are still never
   forwarded.
@@ -121,9 +127,10 @@ console where enabled). A full command list is in
 [`edge` command reference](#edge-command-reference).
 
 To administer it from the app over LoRa, stand next to it, run **Discover
-local nodes**, then log in. The relay never advertises, so without the
-discovery step the app sends the login as a flood, which is ignored unless
-you enable `edge opt flood_login 1`.
+local nodes** (or send a manual `edge advert`, see step 2), then log in. The
+relay does not advertise on its own, so without one of those the app may
+have no path and send the login as a flood, which is ignored unless you
+enable `edge opt flood_login 1`.
 
 ### 2. Add your companions (required)
 
@@ -134,13 +141,20 @@ forwards nothing.
    public key (64 hex characters).
 2. In the serial console: `edge owner add <paste the key>`.
 3. Confirm with `edge owner list` and `edge status`.
+4. To get the relay into your app's contacts (for admin login), stand near
+   it and run `advert.zerohop` (or `edge advert`). Only companions in direct
+   radio range hear it; it is never re-flooded. If the app already knows the
+   relay and ignores the advert, run `clock sync` first: the relay's clock
+   resets on reboot, and apps ignore adverts older than the last one seen.
 
 Repeat for each companion you own (up to 8).
 
 ### 3. Mirror group channels (optional)
 
-To also relay a group channel for your companions, add its 1-byte channel
-hash: `edge chan add <2 hex>`. Check with `edge chan list`.
+To also relay a group channel for your companions, add it with
+`edge chan add public`, or paste the channel key (hex or base64) for any
+other channel. Check with `edge chan list`. Channel messages, including
+your own posts, are dropped until their channel is added.
 
 ### 4. Echo suppression (on by default)
 
@@ -226,21 +240,41 @@ timeout longer than its advert interval.
 
 `edge status` shows the policy, echo and home state, and the counters
 (`uplink_fwd`, `echo_cancel`, `home_held`, `local_copy`, `direct_fwd`,
-`dropped`).
+`owner_direct`, `region_block`, `fwd_block`, `dropped`). The reply line uses
+short names: `up`, `echo`, `copy`, `dfwd`, `odir`, `held`, `rblk`, `fblk`,
+`drop`.
+
+- `owner_direct`: your direct messages on a stored route that the relay
+  re-sent toward their first hop.
+- `region_block`: forwards the relay approved but the stock repeater refused
+  because the flood's region (scope) is unknown here. Add the region with the
+  stock `region` commands.
+- `fwd_block`: approved forwards refused by other stock checks (hop limit,
+  loop detection, or `set repeat off`).
+
+To test while parked at home, `edge home override 30` relays normally for
+30 minutes (1–240); `edge home override off` ends it early. It is not
+saved, so a reboot also ends it.
 
 ## `edge` command reference
 
 ```
+edge help                    - command index (in the reply, so it reaches the app)
+edge help <cmd>              - usage of one command: status advert owner chan opt echo home
 edge status                  - show policy + counters
+edge advert                  - send one zero-hop advert now (same as advert.zerohop)
 edge owner list              - list owner pubkeys
 edge owner show <idx>        - show one owner pubkey in the reply
 edge owner add <64 hex>      - add owner, save
 edge owner del <64 hex>      - remove owner, save
 edge chan list               - list mirrored channel hashes
-edge chan add <2 hex>        - add channel, save
-edge chan del <2 hex>        - remove channel, save
+edge chan add <ch>           - add channel, save
+edge chan del <ch>           - remove channel, save
+  <ch> = 2 hex channel hash, channel key (32/64 hex or base64), or 'public'
+edge opt                     - show option settings
 edge opt mirror_adverts 0|1  - remote advert mirroring, save (default 0)
 edge opt fwd_acks 0|1        - ACK forwarding, save (default 0)
+edge opt owner_direct 0|1    - carry owner direct msgs on stored routes, save (default 1)
 edge opt flood_login 0|1     - accept flood logins heard directly, save (default 0)
 edge echo                    - show echo suppression settings + counter
 edge echo on|off             - echo suppression, save (default on)
@@ -249,11 +283,14 @@ edge home                    - show home detection state + live RSSI
 edge home set <hex> [enter exit timeout_min]
                              - home node pubkey or prefix, save (defaults -60 -80 10)
 edge home off                - disable home detection, save (default off)
+edge home override <1-240>   - relay normally while home for N minutes (not saved)
+edge home override off       - end the override now
 ```
 
 Configuration persists to `/edge_policy` on the device filesystem. Older
-firmware does not know the `echo_*` / `home` / `flood_login` directives and treats such a
-file as invalid (receive-only), so after a downgrade, re-run your setup.
+firmware does not know the `echo_*` / `home` / `owner_direct` / `flood_login`
+directives and treats such a file as invalid (receive-only), so after a
+downgrade, re-run your setup.
 
 ## Build and flash
 
@@ -274,7 +311,8 @@ RAK4631).
 
 See the [upstream README](https://github.com/meshcore-dev/MeshCore#readme)
 for hardware compatibility, the web flasher, clients, and unit tests
-(`pio test -e native` covers `src/`, which this fork does not modify).
+(`pio test -e native` covers `src/`, which this fork modifies only for the
+STM32 build fix above).
 
 ## Goals and non-goals
 

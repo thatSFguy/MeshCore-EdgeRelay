@@ -6,6 +6,7 @@ EdgePolicy::EdgePolicy() {
   _mirror_adverts = false;
   _fwd_acks = false;
   _flood_login = false;
+  _owner_direct = true;
   _echo_suppress = true;
   _echo_wait = EDGE_ECHO_WAIT_DEFAULT;
   _home_prefix_len = 0;
@@ -137,6 +138,12 @@ static bool isDirectRoute(uint8_t route) {
   return route == ROUTE_TYPE_DIRECT || route == ROUTE_TYPE_TRANSPORT_DIRECT;
 }
 
+// Payload types that carry dest/src hashes and make up an owner's conversations.
+static bool isOwnerSession(uint8_t ptype) {
+  return ptype == PAYLOAD_TYPE_TXT_MSG || ptype == PAYLOAD_TYPE_REQ
+      || ptype == PAYLOAD_TYPE_RESPONSE || ptype == PAYLOAD_TYPE_PATH;
+}
+
 EdgeAction EdgePolicy::classify(const mesh::Packet* pkt, const uint8_t* self_hash, uint8_t self_hash_len) const {
   uint8_t route = pkt->getRouteType();
   uint8_t ptype = pkt->getPayloadType();
@@ -145,7 +152,7 @@ EdgeAction EdgePolicy::classify(const mesh::Packet* pkt, const uint8_t* self_has
   // Link-local anonymous requests (app login, info queries): heard directly,
   // i.e. an empty path, whether sent DIRECT or as a FLOOD. Apps send a login
   // as a flood when they have no stored path, which is the usual case since
-  // this node never advertises. Checked before policy validity so a missing
+  // this node does not advertise on its own. Checked before policy validity so a missing
   // or bad policy file never locks out admin over LoRa. Stock still checks
   // the password and the crypto; checkForward() never forwards these.
   if (ptype == PAYLOAD_TYPE_ANON_REQ) {
@@ -217,13 +224,25 @@ EdgeAction EdgePolicy::classify(const mesh::Packet* pkt, const uint8_t* self_has
       // Zero-hop direct: link-local only. Allow control (e.g. discovery)
       // through stock handling (ANON_REQ and post-login admin sessions are
       // handled earlier); a direct exchange cannot propagate or teach the
-      // mesh a path through us. Everything else: drop.
-      return ptype == PAYLOAD_TYPE_CONTROL ? EDGE_STOCK : EDGE_DROP;
+      // mesh a path through us.
+      if (ptype == PAYLOAD_TYPE_CONTROL) return EDGE_STOCK;
+      // The last hop of a direct route addressed to an owner: the owner may
+      // not hear that repeater, so copy it locally.
+      if (_owner_direct && isOwnerSession(ptype) && pkt->payload_len >= 2 && isOwnerHash(pkt->payload[0])) {
+        return EDGE_LOCAL_COPY;
+      }
+      return EDGE_DROP;
     }
-    // This node must be the named next hop, or the packet is not ours to touch.
     uint8_t hash_len = pkt->getPathHashSize();
     if (hash_len > self_hash_len) return EDGE_DROP;
-    if (memcmp(pkt->path, self_hash, hash_len) != 0) return EDGE_DROP;
+    if (memcmp(pkt->path, self_hash, hash_len) != 0) {
+      // Not our hop. An owner's own packet on a stored route whose first hop
+      // the owner may not reach: re-send it unchanged so that hop can hear it.
+      if (_owner_direct && isOwnerSession(ptype) && pkt->payload_len >= 2 && isOwnerHash(pkt->payload[1])) {
+        return EDGE_OWNER_RELAY;
+      }
+      return EDGE_DROP;
+    }
 
     switch (ptype) {
       case PAYLOAD_TYPE_TXT_MSG:
@@ -263,6 +282,7 @@ EdgeAction EdgePolicy::classify(const mesh::Packet* pkt, const uint8_t* self_has
 //   mirror_adverts 0|1
 //   fwd_acks 0|1
 //   flood_login 0|1          (optional; default 0)
+//   owner_direct 0|1         (optional; default 1)
 //   echo_suppress 0|1        (optional; default 1)
 //   echo_wait <0..20>        (optional; default 4)
 //   home <hex prefix> <enter dBm> <exit dBm> <timeout min>   (optional; absent = off)
@@ -329,6 +349,7 @@ void EdgePolicy::resetConfig() {
   _mirror_adverts = false;
   _fwd_acks = false;
   _flood_login = false;
+  _owner_direct = true;
   _echo_suppress = true;
   _echo_wait = EDGE_ECHO_WAIT_DEFAULT;
   _home_prefix_len = 0;
@@ -384,6 +405,8 @@ bool EdgePolicy::parseFile(FILESYSTEM* fs) {
           _fwd_acks = (line[9] == '1');
         } else if (memcmp(line, "flood_login ", 12) == 0) {
           _flood_login = (line[12] == '1');
+        } else if (memcmp(line, "owner_direct ", 13) == 0) {
+          _owner_direct = (line[13] == '1');
         } else if (memcmp(line, "echo_suppress ", 14) == 0) {
           _echo_suppress = (line[14] == '1');
         } else if (memcmp(line, "echo_wait ", 10) == 0) {
@@ -431,6 +454,8 @@ bool EdgePolicy::save(FILESYSTEM* fs) {
   f.println(_fwd_acks ? "1" : "0");
   f.print("flood_login ");
   f.println(_flood_login ? "1" : "0");
+  f.print("owner_direct ");
+  f.println(_owner_direct ? "1" : "0");
   f.print("echo_suppress ");
   f.println(_echo_suppress ? "1" : "0");
   f.print("echo_wait ");

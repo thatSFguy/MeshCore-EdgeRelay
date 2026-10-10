@@ -33,6 +33,11 @@
 #define EDGE_HOME_TIMEOUT_DEFAULT 10   // minutes
 #define EDGE_HOME_TIMEOUT_MAX    240   // minutes
 
+// After the relay carries an owner message, zero-hop ACKs heard for this long
+// are copied locally: a direct ACK's last hop names no destination, so it
+// cannot be attributed to an owner any other way.
+#define EDGE_ACK_WINDOW_MS  60000UL
+
 /**
  * Edge-relay packet policy.
  *
@@ -48,6 +53,7 @@
 enum EdgeAction {
   EDGE_STOCK,       // hand to stock Mesh::onRecvPacket()
   EDGE_LOCAL_COPY,  // re-emit payload once as zero-hop direct; drop the original
+  EDGE_OWNER_RELAY, // owner's direct packet naming another first hop: re-send it unchanged
   EDGE_DROP         // drop the packet entirely
 };
 
@@ -58,6 +64,9 @@ struct EdgePolicyStats {
   uint32_t n_dropped;       // packets dropped by policy
   uint32_t n_echo_cancel;   // queued uplink forwards cancelled: another repeater echoed them first
   uint32_t n_home_held;     // forwards / local copies withheld because the relay is parked at home
+  uint32_t n_owner_direct;  // owner direct packets re-sent toward a first hop the owner cannot reach
+  uint32_t n_region_block;  // policy-approved floods refused by stock: unknown region / scope
+  uint32_t n_fwd_block;     // policy-approved forwards refused by other stock checks (hop limit, loop, repeat off)
 };
 
 class EdgePolicy {
@@ -68,6 +77,7 @@ class EdgePolicy {
   bool _mirror_adverts;   // re-emit selected remote adverts locally (default: false)
   bool _fwd_acks;         // forward ACKs naming this node (default: false)
   bool _flood_login;      // accept a login sent as a flood if heard directly (default: false)
+  bool _owner_direct;     // re-send owner direct packets whose first hop is another node (default: true)
   bool _echo_suppress;    // cancel a queued uplink forward if the mesh echoes it first (default: true)
   uint8_t _echo_wait;     // extra uplink hold, in packet airtimes (default: EDGE_ECHO_WAIT_DEFAULT)
   uint8_t _home_prefix[EDGE_HOME_PREFIX_MAX];  // home node pubkey prefix
@@ -104,6 +114,8 @@ public:
   bool getFwdAcks() const { return _fwd_acks; }
   void setFloodLogin(bool v) { _flood_login = v; }
   bool getFloodLogin() const { return _flood_login; }
+  void setOwnerDirect(bool v) { _owner_direct = v; }
+  bool getOwnerDirect() const { return _owner_direct; }
   void setEchoSuppress(bool v) { _echo_suppress = v; }
   bool getEchoSuppress() const { return _echo_suppress; }
   bool setEchoWait(int v);   // false if out of range
