@@ -5,6 +5,7 @@ EdgePolicy::EdgePolicy() {
   _num_channels = 0;
   _mirror_adverts = false;
   _fwd_acks = false;
+  _flood_login = false;
   _echo_suppress = true;
   _echo_wait = EDGE_ECHO_WAIT_DEFAULT;
   _home_prefix_len = 0;
@@ -150,7 +151,12 @@ EdgeAction EdgePolicy::classify(const mesh::Packet* pkt, const uint8_t* self_has
   if (ptype == PAYLOAD_TYPE_ANON_REQ) {
     if (path_count != 0) return EDGE_DROP;          // relayed: not link-local
     if (isDirectRoute(route)) return EDGE_STOCK;    // stock checks the dest hash
-    // flood: only if addressed to this node, so others' logins are left alone
+    // Flood, heard directly: opt-in ('edge opt flood_login 1'). Off by default
+    // so the app is steered to discover the node and log in DIRECT, with no
+    // flood at all. Only if addressed to this node, so others' logins are
+    // left alone. (With no valid policy the option reads as off: direct
+    // zero-hop login remains the recovery path.)
+    if (!_flood_login) return EDGE_DROP;
     return (pkt->payload_len >= 1 && self_hash_len >= 1 && pkt->payload[0] == self_hash[0])
                ? EDGE_STOCK : EDGE_DROP;
   }
@@ -256,6 +262,7 @@ EdgeAction EdgePolicy::classify(const mesh::Packet* pkt, const uint8_t* self_has
 //   chan <2 hex chars of channel hash>
 //   mirror_adverts 0|1
 //   fwd_acks 0|1
+//   flood_login 0|1          (optional; default 0)
 //   echo_suppress 0|1        (optional; default 1)
 //   echo_wait <0..20>        (optional; default 4)
 //   home <hex prefix> <enter dBm> <exit dBm> <timeout min>   (optional; absent = off)
@@ -321,6 +328,7 @@ void EdgePolicy::resetConfig() {
   _num_channels = 0;
   _mirror_adverts = false;
   _fwd_acks = false;
+  _flood_login = false;
   _echo_suppress = true;
   _echo_wait = EDGE_ECHO_WAIT_DEFAULT;
   _home_prefix_len = 0;
@@ -374,6 +382,8 @@ bool EdgePolicy::parseFile(FILESYSTEM* fs) {
           _mirror_adverts = (line[15] == '1');
         } else if (memcmp(line, "fwd_acks ", 9) == 0) {
           _fwd_acks = (line[9] == '1');
+        } else if (memcmp(line, "flood_login ", 12) == 0) {
+          _flood_login = (line[12] == '1');
         } else if (memcmp(line, "echo_suppress ", 14) == 0) {
           _echo_suppress = (line[14] == '1');
         } else if (memcmp(line, "echo_wait ", 10) == 0) {
@@ -419,6 +429,8 @@ bool EdgePolicy::save(FILESYSTEM* fs) {
   f.println(_mirror_adverts ? "1" : "0");
   f.print("fwd_acks ");
   f.println(_fwd_acks ? "1" : "0");
+  f.print("flood_login ");
+  f.println(_flood_login ? "1" : "0");
   f.print("echo_suppress ");
   f.println(_echo_suppress ? "1" : "0");
   f.print("echo_wait ");

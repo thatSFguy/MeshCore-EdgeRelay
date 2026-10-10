@@ -67,6 +67,7 @@ class EdgePolicy {
   uint8_t _num_channels;
   bool _mirror_adverts;   // re-emit selected remote adverts locally (default: false)
   bool _fwd_acks;         // forward ACKs naming this node (default: false)
+  bool _flood_login;      // accept a login sent as a flood if heard directly (default: false)
   bool _echo_suppress;    // cancel a queued uplink forward if the mesh echoes it first (default: true)
   uint8_t _echo_wait;     // extra uplink hold, in packet airtimes (default: EDGE_ECHO_WAIT_DEFAULT)
   uint8_t _home_prefix[EDGE_HOME_PREFIX_MAX];  // home node pubkey prefix
@@ -101,6 +102,8 @@ public:
   void setFwdAcks(bool v) { _fwd_acks = v; }
   bool getMirrorAdverts() const { return _mirror_adverts; }
   bool getFwdAcks() const { return _fwd_acks; }
+  void setFloodLogin(bool v) { _flood_login = v; }
+  bool getFloodLogin() const { return _flood_login; }
   void setEchoSuppress(bool v) { _echo_suppress = v; }
   bool getEchoSuppress() const { return _echo_suppress; }
   bool setEchoWait(int v);   // false if out of range

@@ -69,7 +69,7 @@ code in `src/` and the stock `simple_repeater` example are untouched.
 | `ADVERT` from an owner | Drop (never export owner adverts) | — |
 | `ADVERT` from anyone else | Drop (mirroring opt-in only, off by default) | — |
 | `ACK` | Drop (forwarding opt-in only, off by default) | Same |
-| `ANON_REQ` | Link-local only: password login heard directly (empty path, addressed to this node); never forwarded | Link-local zero-hop only: info queries, password login, and the resulting admin session from authenticated clients (stock crypto auth still enforced on every packet; multi-hop stays dropped) |
+| `ANON_REQ` | Drop; opt-in (`edge opt flood_login 1`): password login heard directly (empty path, addressed to this node). Never forwarded | Link-local zero-hop only: info queries, password login, and the resulting admin session from authenticated clients (stock crypto auth still enforced on every packet; multi-hop stays dropped) |
 | `TRACE`, `MULTIPART`, `RAW_CUSTOM`, unknown | Drop | Drop |
 | `CONTROL` | Drop | Drop (except link-local zero-hop, e.g. discovery replies, which can't propagate) |
 
@@ -91,16 +91,21 @@ Notes:
 - App login and remote administration are allowed, but only from direct radio
   range (zero-hop): the admin password is still required, and stock's
   cryptographic authentication applies to every session packet (the 1-byte
-  prefix the classifier sees is only a routing hint). A login is accepted
-  whether the app sends it direct or as a flood (apps flood when they have no
-  stored path, which is usual since this node never advertises), as long as
-  it was heard directly, not relayed. Replies go out zero-hop, never flooded.
-  Relayed (multi-hop) admin traffic is dropped, so the node cannot be
-  administered through the wider mesh. USB serial remains available as the
-  primary console.
+  prefix the classifier sees is only a routing hint). To log in, first run
+  **Discover local nodes** in the app next to the relay, then log in: the app
+  then sends the login direct, with no flood at all. Login replies always go
+  out zero-hop, never flooded. Relayed (multi-hop) admin traffic is dropped,
+  so the node cannot be administered through the wider mesh. USB serial
+  remains available as the primary console.
+- Logins the app sends as a flood (it does when it has no stored path, which
+  is usual since this node never advertises) are dropped by default, to keep
+  flooding to a minimum. `edge opt flood_login 1` accepts them when heard
+  directly (empty path, addressed to this node); they are still never
+  forwarded.
 - With no valid policy file on the filesystem, the node boots **receive-only**
-  (fail closed) until you configure owners via the CLI. Zero-hop admin login
-  still works in that state, so it can always be recovered over LoRa.
+  (fail closed) until you configure owners via the CLI. Direct zero-hop admin
+  login (discover, then log in) still works in that state, so it can always
+  be recovered over LoRa.
 
 ## Setup
 
@@ -114,6 +119,11 @@ configuration on top of that.
 The `edge` commands run over USB serial at 115200 baud (also on the ethernet
 console where enabled). A full command list is in
 [`edge` command reference](#edge-command-reference).
+
+To administer it from the app over LoRa, stand next to it, run **Discover
+local nodes**, then log in. The relay never advertises, so without the
+discovery step the app sends the login as a flood, which is ignored unless
+you enable `edge opt flood_login 1`.
 
 ### 2. Add your companions (required)
 
@@ -231,6 +241,7 @@ edge chan add <2 hex>        - add channel, save
 edge chan del <2 hex>        - remove channel, save
 edge opt mirror_adverts 0|1  - remote advert mirroring, save (default 0)
 edge opt fwd_acks 0|1        - ACK forwarding, save (default 0)
+edge opt flood_login 0|1     - accept flood logins heard directly, save (default 0)
 edge echo                    - show echo suppression settings + counter
 edge echo on|off             - echo suppression, save (default on)
 edge echo wait <0-20>        - extra uplink hold, in packet airtimes, save (default 4)
@@ -241,7 +252,7 @@ edge home off                - disable home detection, save (default off)
 ```
 
 Configuration persists to `/edge_policy` on the device filesystem. Older
-firmware does not know the `echo_*` / `home` directives and treats such a
+firmware does not know the `echo_*` / `home` / `flood_login` directives and treats such a
 file as invalid (receive-only), so after a downgrade, re-run your setup.
 
 ## Build and flash

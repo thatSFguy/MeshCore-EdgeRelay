@@ -1361,6 +1361,7 @@ void MyMesh::handleEdgeCommand(char* args, char* reply) {
     Serial.println("edge chan del <2 hex>        - remove channel, save");
     Serial.println("edge opt mirror_adverts 0|1  - remote advert mirroring, save");
     Serial.println("edge opt fwd_acks 0|1        - ACK forwarding, save");
+    Serial.println("edge opt flood_login 0|1     - accept flood logins heard directly, save");
     Serial.println("edge echo                    - show echo suppression settings");
     Serial.println("edge echo on|off             - cancel uplink if mesh echoes it first, save");
     Serial.println("edge echo wait <0-20>        - extra uplink hold in airtimes, save");
@@ -1373,9 +1374,10 @@ void MyMesh::handleEdgeCommand(char* args, char* reply) {
 
   if (strcmp(args, "status") == 0) {
     Serial.printf("edge: policy %s\n", edge_policy.isValid() ? "OK" : "INVALID (receive-only)");
-    Serial.printf("  owners: %d  channels: %d  mirror_adverts: %d  fwd_acks: %d\n",
+    Serial.printf("  owners: %d  channels: %d  mirror_adverts: %d  fwd_acks: %d  flood_login: %d\n",
                   edge_policy.getNumOwners(), edge_policy.getNumChannels(),
-                  edge_policy.getMirrorAdverts() ? 1 : 0, edge_policy.getFwdAcks() ? 1 : 0);
+                  edge_policy.getMirrorAdverts() ? 1 : 0, edge_policy.getFwdAcks() ? 1 : 0,
+                  edge_policy.getFloodLogin() ? 1 : 0);
     Serial.printf("  echo_suppress: %d  echo_wait: %d\n",
                   edge_policy.getEchoSuppress() ? 1 : 0, (int) edge_policy.getEchoWait());
     Serial.printf("  home: %s\n", !edge_policy.isHomeEnabled() ? "off" : (isHomeHeld() ? "AT HOME (paused)" : "away"));
@@ -1499,8 +1501,11 @@ void MyMesh::handleEdgeCommand(char* args, char* reply) {
     } else if (memcmp(rest, "fwd_acks ", 9) == 0) {
       edge_policy.setFwdAcks(rest[9] == '1');
       strcpy(reply, edge_policy.save(_fs) ? "OK" : "Err - save failed");
+    } else if (memcmp(rest, "flood_login ", 12) == 0) {
+      edge_policy.setFloodLogin(rest[12] == '1');
+      strcpy(reply, edge_policy.save(_fs) ? "OK" : "Err - save failed");
     } else {
-      strcpy(reply, "Err - unknown opt (mirror_adverts, fwd_acks)");
+      strcpy(reply, "Err - unknown opt (mirror_adverts, fwd_acks, flood_login)");
     }
     return;
   }
