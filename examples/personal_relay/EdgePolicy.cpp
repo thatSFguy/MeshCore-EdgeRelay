@@ -148,18 +148,28 @@ EdgeAction EdgePolicy::classify(const mesh::Packet* pkt, const uint8_t* self_has
   uint8_t ptype = pkt->getPayloadType();
   uint8_t path_count = pkt->getPathHashCount();
 
-  // Link-local anonymous requests (app login, info queries): heard directly,
-  // i.e. an empty path, whether sent DIRECT or as a FLOOD. Apps send a login
-  // as a flood when they have no stored path, which is the usual case since
-  // this node never advertises. Checked before policy validity so a missing
-  // or bad policy file never locks out admin over LoRa. Stock still checks
-  // the password and the crypto; checkForward() never forwards these.
+  // Anonymous requests (app login, info queries). Link-local ones heard
+  // directly, i.e. an empty path, whether sent DIRECT or as a FLOOD: apps send
+  // a login as a flood when they have no stored path, which is the usual case
+  // since this node never advertises. Checked before policy validity so a
+  // missing or bad policy file never locks out admin over LoRa. Stock still
+  // checks the password and the crypto.
+  // An owner's login to another node (a remote repeater or room server) is
+  // carried like the owner's other uplink traffic; anyone else's is dropped.
   if (ptype == PAYLOAD_TYPE_ANON_REQ) {
-    if (path_count != 0) return EDGE_DROP;          // relayed: not link-local
-    if (isDirectRoute(route)) return EDGE_STOCK;    // stock checks the dest hash
-    // flood: only if addressed to this node, so others' logins are left alone
-    return (pkt->payload_len >= 1 && self_hash_len >= 1 && pkt->payload[0] == self_hash[0])
-               ? EDGE_STOCK : EDGE_DROP;
+    bool from_owner = _valid && isOwnerAnonReq(pkt);
+    if (path_count == 0) {
+      if (isDirectRoute(route)) return EDGE_STOCK;    // stock checks the dest hash; never forwarded
+      // flood addressed to this node, or an owner's flood login to another node
+      if (pkt->payload_len >= 1 && self_hash_len >= 1 && pkt->payload[0] == self_hash[0]) return EDGE_STOCK;
+      return from_owner ? EDGE_STOCK : EDGE_DROP;
+    }
+    // relayed: only an owner's direct login on a stored route
+    if (!from_owner || !isDirectRoute(route)) return EDGE_DROP;
+    uint8_t hash_len = pkt->getPathHashSize();
+    if (hash_len > self_hash_len) return EDGE_DROP;
+    if (memcmp(pkt->path, self_hash, hash_len) == 0) return EDGE_STOCK;  // we are the next hop
+    return _owner_direct ? EDGE_OWNER_RELAY : EDGE_DROP;
   }
 
   if (!_valid) return EDGE_DROP;  // fail closed: receive-only
@@ -208,7 +218,7 @@ EdgeAction EdgePolicy::classify(const mesh::Packet* pkt, const uint8_t* self_has
       }
       default:
         // TRACE, CONTROL, MULTIPART, RAW_CUSTOM, unknown: drop.
-        // (ANON_REQ is handled at the top: link-local only.)
+        // (ANON_REQ is handled at the top.)
         return EDGE_DROP;
     }
   }
@@ -260,8 +270,8 @@ EdgeAction EdgePolicy::classify(const mesh::Packet* pkt, const uint8_t* self_has
         return _fwd_acks ? EDGE_STOCK : EDGE_DROP;
       }
       default:
-        // ANON_REQ is only allowed zero-hop (handled above); multi-hop and
-        // everything else (TRACE, CONTROL, MULTIPART, RAW_CUSTOM): drop.
+        // ANON_REQ is handled at the top; everything else
+        // (TRACE, CONTROL, MULTIPART, RAW_CUSTOM): drop.
         return EDGE_DROP;
     }
   }

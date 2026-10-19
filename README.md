@@ -72,7 +72,7 @@ code in `src/` and the stock `simple_repeater` example are untouched.
 | `ADVERT` from an owner | Drop (never export owner adverts) | — |
 | `ADVERT` from anyone else | Drop (mirroring opt-in only, off by default) | — |
 | `ACK` | Drop (forwarding opt-in only, off by default) | Same; a zero-hop ACK within 60 s of carrying an owner message is copied locally (its delivery receipt) |
-| `ANON_REQ` | Link-local only: password login heard directly (empty path, addressed to this node); never forwarded | Link-local zero-hop only: info queries, password login, and the resulting admin session from authenticated clients (stock crypto auth still enforced on every packet; multi-hop stays dropped) |
+| `ANON_REQ` | Login to this node heard directly (empty path, addressed to this node); an owner's login to a remote node (sender key matches a whitelisted owner, heard directly) is forwarded normally; anything else dropped | Link-local zero-hop: info queries, password login, and the resulting admin session from authenticated clients (stock crypto auth still enforced on every packet). An owner's login on a stored route: forwarded if the car is next hop, else re-sent toward the first hop like other owner direct traffic |
 | `TRACE`, `MULTIPART`, `RAW_CUSTOM`, unknown | Drop | Drop |
 | `CONTROL` | Drop | Drop (except link-local zero-hop, e.g. discovery replies, which can't propagate) |
 

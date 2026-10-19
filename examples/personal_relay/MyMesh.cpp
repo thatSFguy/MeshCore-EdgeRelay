@@ -703,7 +703,7 @@ mesh::DispatcherAction MyMesh::onRecvPacket(mesh::Packet* pkt) {
       return ACTION_RELEASE;
     }
     // EDGE_STOCK: fall through to normal handling below.
-    if (pkt->getPayloadType() == PAYLOAD_TYPE_ANON_REQ) {
+    if (pkt->getPayloadType() == PAYLOAD_TYPE_ANON_REQ && !edge_policy.isOwnerAnonReq(pkt)) {
       // link-local login / info request: answered, never forwarded
     } else if (pkt->isRouteFlood() && pkt->getPathHashCount() == 0) {
       edge_stats.n_owner_uplink++;

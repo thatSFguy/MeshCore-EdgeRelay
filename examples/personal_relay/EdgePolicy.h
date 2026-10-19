@@ -141,6 +141,11 @@ public:
   bool isOwnerHash(uint8_t h) const;
   bool isOwnerPubkey(const uint8_t pubkey[PUB_KEY_SIZE]) const;
   bool isChannel(uint8_t h) const;
+  // ANON_REQ (login / anonymous request) sent by an owner: the payload carries
+  // the sender's full public key, so this is an exact match, not a 1-byte hash.
+  bool isOwnerAnonReq(const mesh::Packet* pkt) const {
+    return pkt->payload_len >= 1 + PUB_KEY_SIZE && isOwnerPubkey(&pkt->payload[1]);
+  }
 
   // --- classification ---
   // self_hash/self_hash_len: this node's path hash, for direct next-hop checks.
@@ -148,9 +153,10 @@ public:
 
   // Final deny guard for allowPacketForward(): true only if stock handling is permitted.
   bool checkForward(const mesh::Packet* pkt, const uint8_t* self_hash, uint8_t self_hash_len) const {
-    // Anonymous requests are only ever answered, never forwarded: stock would
-    // otherwise re-flood a flood login that did not decrypt.
-    if (pkt->getPayloadType() == PAYLOAD_TYPE_ANON_REQ) return false;
+    // Anonymous requests are forwarded only when they are an owner's login to
+    // another node; anyone else's would otherwise be re-flooded by stock when
+    // it does not decrypt here.
+    if (pkt->getPayloadType() == PAYLOAD_TYPE_ANON_REQ && !isOwnerAnonReq(pkt)) return false;
     return _valid && classify(pkt, self_hash, self_hash_len) == EDGE_STOCK;
   }
 
