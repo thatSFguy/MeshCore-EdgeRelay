@@ -54,8 +54,29 @@ bridges that one hop. A moving node must not act like a normal repeater, so:
   `LocationProvider::sendSentence()` definition in its `target.cpp` working
   around an upstream link bug, and `GPS_ENABLED_BY_DEFAULT` (opt-in flag, only
   this env) in `examples/companion_radio/MyMesh.cpp`.
+- Also fork-only: the K.I.S.S. Messenger (`LilyGo_TLora_V2_1_1_6_kiss_messenger`):
+  a standalone on-device chat UI in `examples/companion_radio/ui-kiss/` (CardKB
+  keyboard, OLED, buzzer GPIO 15, vibration GPIO 13, no BLE), plus two small
+  public additions to the companion's `MyMesh`: `floodAdvert()` and
+  `persistContacts()`. Simple mode: no auto-added contacts; DMs are set up by the
+  phone app's exchange in the group chat, which carries both public keys:
+  "DM request for @[Bob] mch:r:<64 hex>" and
+  "DM accepted @[Alice] mch:a:<8 hex of Alice's key>:<64 hex>". Keep this
+  format identical to the app's; no adverts are involved.
 - Every board's `<board>_personal_relay` env mirrors its `_repeater` env with
   only the example and `ADVERT_NAME` changed.
+
+## Website (`site/`)
+
+Static GitHub Pages site, no build step: `index.html` (landing), `program.html`
+(install: ESP Web Tools for ESP32, .uf2/.hex downloads otherwise),
+`relay.html` (relay USB text CLI over Web Serial), `kiss.html` (companion
+binary protocol over Web Serial). Desktop Chrome/Edge only for USB.
+`.github/workflows/github-pages.yml` (manual) builds the K.I.S.S. firmware,
+downloads the newest published personal-relay release, and runs
+`tools/build_site_manifest.py` to index `site/firmware/` (chip family read from
+the ESP image header, nRF52/RP2040 from the UF2 family ID). If relay or
+companion CLI/protocol replies change, update the parsers in `site/assets/`.
 
 ## Upstream merge checklist
 

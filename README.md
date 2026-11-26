@@ -25,6 +25,15 @@ stock `simple_repeater` example, which is left untouched:
   path) and no return path is learned through the car.
 - **Everything else:** dropped.
 
+## Website
+
+**https://thatsfguy.github.io/MeshCore-EdgeRelay/** installs and configures
+both firmwares from the browser (desktop Chrome or Edge, over USB): flash any
+board, set up a Personal Relay (owners, channels, home detection, radio), or a
+K.I.S.S. Messenger (name, radio, channels including private ones). The site
+lives in `site/` and is published by the *Build and deploy site to GitHub
+Pages* workflow (run it manually from the Actions tab).
+
 ## Upstream base and versioning
 
 Based on **MeshCore v1.18.0** (tag `repeater-v1.18.0`, commit `81dbae5`),

@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Install Firmware</title>
+<meta name="description" content="Flash the MeshCore Personal Relay or K.I.S.S. Messenger firmware from your browser.">
+<link rel="icon" href="assets/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/site.css">
+<script type="module" src="https://unpkg.com/esp-web-tools@10.4.0/dist/web/install-button.js?module"></script>
+</head>
+<body>
+<header class="top"><div class="top-inner">
+  <a class="brand" href="./">Mesh<span>Core</span> EdgeRelay</a>
+  <nav class="nav">
+    <a href="program.html" aria-current="page">Install</a>
+    <a href="relay.html">Configure relay</a>
+    <a href="kiss.html">Configure K.I.S.S.</a>
+    <a href="https://github.com/thatSFguy/MeshCore-EdgeRelay">GitHub</a>
+  </nav>
+</div></header>
+
+<main class="steps">
+  <h1>Install firmware</h1>
+  <p class="lead">Choose the firmware and your board, then install it over USB.</p>
+
+  <div class="card step">
+    <h2>Firmware</h2>
+    <div class="seg" role="group" aria-label="Firmware">
+      <button type="button" data-kind="relay" aria-pressed="true">Personal Relay</button>
+      <button type="button" data-kind="kiss" aria-pressed="false">K.I.S.S. Messenger</button>
+    </div>
+    <p class="muted small" id="kind-desc" style="margin:10px 0 0"></p>
+  </div>
+
+  <div class="card step">
+    <h2>Board</h2>
+    <input id="search" type="search" placeholder="Search boards (e.g. RAK, Heltec, T1000)" style="width:100%" aria-label="Search boards">
+    <div class="boards" id="boards" role="listbox" aria-label="Boards"></div>
+    <p class="muted small" id="board-count" style="margin:8px 0 0"></p>
+  </div>
+
+  <div class="card step">
+    <h2>Install</h2>
+    <div id="install"><p class="muted">Choose a board above.</p></div>
+  </div>
+</main>
+
+<footer>
+  Firmware version shown with each file. Source:
+  <a href="https://github.com/thatSFguy/MeshCore-EdgeRelay">thatSFguy/MeshCore-EdgeRelay</a>.
+</footer>
+<script type="module" src="assets/program.js"></script>
+</body>
+</html>

@@ -122,6 +122,8 @@ public:
   void loop();
   void handleCmdFrame(size_t len);
   bool advert();
+  bool floodAdvert();   // flood self-advert in the default scope (as the app's flood advert)
+  void persistContacts() { saveContacts(); }   // for on-device UIs that add contacts
   void enterCLIRescue();
 
   int  getRecentlyHeard(AdvertPath dest[], int max_num);

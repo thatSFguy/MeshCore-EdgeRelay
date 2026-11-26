@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Configure K.I.S.S.</title>
+<meta name="description" content="Configure a K.I.S.S. Messenger over USB from the browser: name, radio and channels.">
+<link rel="icon" href="assets/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+<header class="top"><div class="top-inner">
+  <a class="brand" href="./">Mesh<span>Core</span> EdgeRelay</a>
+  <nav class="nav">
+    <a href="program.html">Install</a>
+    <a href="relay.html">Configure relay</a>
+    <a href="kiss.html" aria-current="page">Configure K.I.S.S.</a>
+    <a href="https://github.com/thatSFguy/MeshCore-EdgeRelay">GitHub</a>
+  </nav>
+</div></header>
+
+<main>
+  <h1>Configure K.I.S.S. Messenger</h1>
+  <p class="lead">Connect the K.I.S.S. Messenger by USB. Changes are saved on the device and show up on its
+    screen within a few seconds.</p>
+  <div id="unsupported"></div>
+
+  <div class="conn">
+    <span class="dot" id="dot"></span>
+    <span class="status" id="status">Not connected</span>
+    <button class="primary" id="connect">Connect</button>
+  </div>
+
+  <div id="panels" hidden>
+    <div class="card">
+      <h2>Device</h2>
+      <dl class="kv" id="device-kv"></dl>
+      <div class="row" style="margin-top:14px">
+        <div class="field wide"><label for="name">Name (shown in the chat)</label><input id="name" maxlength="31"></div>
+        <button id="name-save">Save name</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Channels</h2>
+      <p class="muted small" style="margin-top:0">Everyone using a channel needs the same name and secret.
+        To give another device this channel, copy its secret and add it there.</p>
+      <ul class="list" id="chans"></ul>
+
+      <h3>Add a channel</h3>
+      <div class="row">
+        <div class="field"><label for="ch-name">Name</label><input id="ch-name" maxlength="31" placeholder="thatSFguy's channel"></div>
+        <div class="field wide"><label for="ch-secret">Secret (32 hex characters or base64)</label>
+          <input id="ch-secret" class="mono" autocomplete="off" spellcheck="false"></div>
+      </div>
+      <div class="actions">
+        <button id="ch-generate">Generate new secret</button>
+        <button class="primary" id="ch-add">Add channel</button>
+        <button id="ch-public">Add Public</button>
+      </div>
+      <p class="muted small">A private channel is just a name plus a random secret. Generate one here for a new
+        channel, or paste the secret of an existing one to join it.</p>
+    </div>
+
+    <div class="card">
+      <h2>Radio</h2>
+      <div class="row">
+        <div class="field wide"><label for="preset">Preset</label>
+          <select id="preset">
+            <option value="">Custom</option>
+            <option value="910.525,62.5,7,5">USA / Canada (Recommended): 910.525 MHz, 62.5 kHz, SF7, CR5</option>
+            <option value="869.618,62.5,8,8">EU / UK (narrow): 869.618 MHz, 62.5 kHz, SF8, CR8</option>
+          </select></div>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <div class="field"><label for="freq">Frequency (MHz)</label><input id="freq" type="number" step="0.001"></div>
+        <div class="field"><label for="bw">Bandwidth (kHz)</label><input id="bw" type="number" step="0.1"></div>
+        <div class="field"><label for="sf">SF</label><input id="sf" type="number" min="5" max="12"></div>
+        <div class="field"><label for="cr">CR</label><input id="cr" type="number" min="5" max="8"></div>
+        <div class="field"><label for="tx">TX power (dBm)</label><input id="tx" type="number"></div>
+      </div>
+      <p class="muted small">Radio settings must match the rest of your mesh. Check with your group before changing them.</p>
+      <div class="actions"><button class="primary" id="radio-save">Save radio</button><button class="danger" id="reboot">Reboot</button></div>
+    </div>
+  </div>
+</main>
+
+<footer>Uses the MeshCore companion protocol over USB, the same one the phone app uses.</footer>
+<script type="module" src="assets/kiss.js"></script>
+</body>
+</html>

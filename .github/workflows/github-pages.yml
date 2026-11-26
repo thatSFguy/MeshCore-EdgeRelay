@@ -1,37 +1,74 @@
-name: Build and deploy Docs site to GitHub Pages
+name: Build and deploy site to GitHub Pages
 
+# Publishes site/ (install + configure pages) with firmware:
+#  - K.I.S.S. Messenger: built here from this commit
+#  - Personal relay: files from the newest published personal-relay release
+#    (run "Build Personal Relay Firmwares" with "publish" ticked first)
 on:
   workflow_dispatch:
-  # Manual-only for this fork: automatic builds on main disabled.
-  # push:
-  #   branches:
-  #     - main
+  # Manual-only for this fork, like the firmware builds.
 
 permissions:
-  contents: write
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
 
 jobs:
-  github-pages:
+  build:
     runs-on: ubuntu-latest
     steps:
-
       - name: Checkout Repo
         uses: actions/checkout@v6
 
-      - name: Setup Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: '3.13'
+      - name: Setup Build Environment
+        uses: ./.github/actions/setup-build-environment
 
-      - name: Build
+      - name: Build K.I.S.S. Messenger firmware
+        shell: bash
         run: |
-          pip install mkdocs-material
-          mkdocs build
+          FIRMWARE_VERSION=$(sed -n 's/^#define FIRMWARE_VERSION *"\(.*\)".*/\1/p' examples/companion_radio/MyMesh.h | head -1)
+          export FIRMWARE_VERSION
+          /usr/bin/env bash build.sh build-firmware LilyGo_TLora_V2_1_1_6_kiss_messenger
+          mkdir -p site/firmware
+          cp out/*_kiss_messenger-*-merged.bin site/firmware/
 
-      - name: Deploy to GitHub Pages
-        uses: peaceiris/actions-gh-pages@v4.1.0
+      - name: Download personal relay firmware
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          TAG=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 50 --json tagName,isDraft \
+                  -q '[.[] | select(.isDraft | not) | select(.tagName | startswith("personal-relay-"))][0].tagName')
+          if [ -z "$TAG" ]; then
+            echo "No published personal-relay release found"
+            exit 1
+          fi
+          echo "Using $TAG"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" -D site/firmware \
+            -p '*_personal_relay-*-merged.bin' -p '*_personal_relay-*.uf2' -p '*_personal_relay-*.hex'
+
+      - name: Index firmware
+        run: python3 tools/build_site_manifest.py site/firmware
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload site
+        uses: actions/upload-pages-artifact@v3
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          cname: docs.meshcore.io
-          publish_dir: ./site
-          publish_branch: 'gh-pages'
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
