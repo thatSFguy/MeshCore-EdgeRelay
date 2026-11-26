@@ -5,6 +5,13 @@ A personal, car-based MeshCore edge relay. This is a **fork** of the official
 repeater installed in a parked car can serve its owner's companion devices
 without burdening the wider mesh.
 
+The fork also carries the **K.I.S.S. Messenger**: a standalone MeshCore
+messenger for a LilyGo T-LoRa V2.1-1.6 with a CardKB keyboard, so you can read
+and type messages without a phone (see [K.I.S.S. Messenger](#kiss-messenger)).
+
+**Install or configure either one from the browser:
+https://thatsfguy.github.io/MeshCore-EdgeRelay/**
+
 **Upstream:** https://github.com/meshcore-dev/MeshCore — all core protocol,
 radio, and platform code is theirs, under the MIT license (see `LICENSE`).
 
@@ -25,14 +32,24 @@ stock `simple_repeater` example, which is left untouched:
   path) and no return path is learned through the car.
 - **Everything else:** dropped.
 
-## Website
+## Install and configure from the browser
 
-**https://thatsfguy.github.io/MeshCore-EdgeRelay/** installs and configures
-both firmwares from the browser (desktop Chrome or Edge, over USB): flash any
-board, set up a Personal Relay (owners, channels, home detection, radio), or a
-K.I.S.S. Messenger (name, radio, channels including private ones). The site
-lives in `site/` and is published by the *Build and deploy site to GitHub
-Pages* workflow (run it manually from the Actions tab).
+The project website does it all over USB, no tools to install:
+
+| Page | What it does |
+|---|---|
+| [**Install firmware**](https://thatsfguy.github.io/MeshCore-EdgeRelay/program.html) | Pick Personal Relay or K.I.S.S. Messenger and your board. ESP32 boards flash straight from the browser; nRF52 (RAK4631, T1000-E, …) and RP2040 boards get a `.uf2` to drag onto the board's USB drive; STM32 boards get a `.hex`. |
+| [**Configure relay**](https://thatsfguy.github.io/MeshCore-EdgeRelay/relay.html) | Owners, group channels, echo suppression, home detection, options, name, admin password and radio (with presets), plus a command console. |
+| [**Configure K.I.S.S.**](https://thatsfguy.github.io/MeshCore-EdgeRelay/kiss.html) | Name, radio (with presets), channels, including creating or joining a private channel. Also sets the device clock from your computer. |
+
+Flashing and configuring need **desktop Chrome or Edge** (Windows, Mac, Linux
+or ChromeOS); phones and Firefox/Safari can't talk to USB devices, but can
+still download firmware files. When updating an ESP32 board, leave *Erase
+device* unticked to keep its settings.
+
+The site lives in `site/` and is published by the *Build and deploy site to
+GitHub Pages* workflow (run it manually from the Actions tab). It serves the
+newest published *Personal Relay* release and a K.I.S.S. build of `main`.
 
 ## Upstream base and versioning
 
@@ -54,9 +71,20 @@ upstream release, bump `UPSTREAM_VERSION` in
 
 ## What changed vs upstream
 
-All changes are confined to `examples/personal_relay/` (plus this README,
-`build.sh`, one new build environment, and one new workflow). Core protocol
-code in `src/` and the stock `simple_repeater` example are untouched.
+The relay lives in `examples/personal_relay/` (plus `build.sh`, a
+`<board>_personal_relay` build target for every board, and its workflow).
+Core protocol code in `src/` and the stock `simple_repeater` example are
+untouched, apart from a portable `ltoa()` replacement needed for STM32 builds.
+The rest of the fork:
+
+- K.I.S.S. Messenger: `examples/companion_radio/ui-kiss/`, its build target
+  in `variants/lilygo_tlora_v2_1/`, and two small public helpers added to the
+  companion's `MyMesh` (`floodAdvert()`, `persistContacts()`).
+- A T-LoRa V2.1-1.6 BLE companion with an external GPS module
+  (`LilyGo_TLora_V2_1_1_6_companion_radio_ble_gps`).
+- The website (`site/`, `tools/build_site_manifest.py`, Pages workflow).
+
+The relay's changes in detail:
 
 | Area | Change |
 |---|---|
@@ -120,13 +148,17 @@ Notes:
 
 ### 1. Set it up like a normal repeater
 
-Flash the personal relay firmware (see [Build and flash](#build-and-flash))
-and configure it the way you would any MeshCore repeater: name, radio
-settings, admin password, and so on. Everything below is the extra edge
-configuration on top of that.
+Flash the personal relay firmware from the
+[install page](https://thatsfguy.github.io/MeshCore-EdgeRelay/program.html)
+(or see [Build and flash](#build-and-flash)) and configure it the way you would
+any MeshCore repeater: name, radio settings, admin password, and so on.
+Everything below is the extra edge configuration on top of that.
 
-The `edge` commands run over USB serial at 115200 baud (also on the ethernet
-console where enabled). A full command list is in
+Every step below can be done on the
+[relay configuration page](https://thatsfguy.github.io/MeshCore-EdgeRelay/relay.html)
+with the relay plugged in by USB. Underneath, it sends the `edge` commands,
+which you can also type yourself over USB serial at 115200 baud (also on the
+ethernet console where enabled). A full command list is in
 [`edge` command reference](#edge-command-reference).
 
 ### 2. Add your companions (required)
@@ -288,9 +320,57 @@ firmware does not know the `echo_*` / `home` / `owner_direct` directives and
 treats such a file as invalid (receive-only), so after a downgrade, re-run
 your setup.
 
+## K.I.S.S. Messenger
+
+A standalone messenger: a LilyGo T-LoRa V2.1-1.6 with an M5Stack CardKB
+keyboard, a piezo buzzer and a vibration motor, in a 3D-printed case. Read and
+type messages on its OLED, no phone needed. It runs the MeshCore companion
+firmware with its own on-device interface (`ui-kiss`) and no Bluetooth; the
+phone app can still connect over a USB-OTG cable.
+
+**Wiring**
+
+| Part | Connection |
+|---|---|
+| CardKB | I2C on GPIO 21 (SDA) / 22 (SCL), shared with the OLED; 3.3 V and GND |
+| Piezo buzzer | GPIO 15, switched by a 2N2222 (GPIO high = on) |
+| Vibration motor | GPIO 13, switched by a 2N2222 (GPIO high = on) |
+| User button | the board's BOOT button (GPIO 0) |
+
+**Install:** [install page](https://thatsfguy.github.io/MeshCore-EdgeRelay/program.html)
+→ *K.I.S.S. Messenger*, or build target `LilyGo_TLora_V2_1_1_6_kiss_messenger`.
+Don't flash the GPS companion build to this hardware: it uses GPIO 15/13 for
+the GPS. **Set up:** on first boot it asks for a name. Then use the
+[K.I.S.S. configuration page](https://thatsfguy.github.io/MeshCore-EdgeRelay/kiss.html)
+for the radio (USA / Canada and EU / UK presets) and channels.
+
+**Using it**
+
+| Screen | Keys |
+|---|---|
+| Chat list | Up/Down to choose, Enter to open, or just start typing. Esc opens the menu. |
+| Chat | Type, Enter to send. Up/Down scrolls. Tab asks someone in the channel for a DM. Esc goes back. |
+| Menu | Flood / zero-hop advert, name, sound on/off, vibrate on/off, about |
+
+The screen sleeps after a minute; the first key press only wakes it. The BOOT
+button turns the screen on or off. Sent DMs show `..` while sending, `+` when
+delivered and `!` if delivery failed.
+
+**Simple mode.** Like the phone app's simple mode, it never adds contacts on
+its own. To DM someone, ask in the group chat: Tab, pick the person, Enter.
+That posts `DM request for @[name] mch:r:<your key>`; when they accept (on a
+K.I.S.S. or in the app), their reply carries their key and both sides add each
+other. No adverts are involved.
+
+**Clock.** With no app or GPS, the clock is taken from the mesh, but only when
+two different nodes agree on the time, so one node with a wrong clock can't
+drag it along. The configuration page also sets it from your computer.
+
 ## Build and flash
 
-Same as upstream. From this directory:
+The easiest way is the
+[install page](https://thatsfguy.github.io/MeshCore-EdgeRelay/program.html).
+To build from source instead, same as upstream. From this directory:
 
 ```bash
 pio run -e <your_target>        # build
@@ -306,7 +386,7 @@ workflow from the Actions tab and download the artifact (`.uf2` for the
 RAK4631).
 
 See the [upstream README](https://github.com/meshcore-dev/MeshCore#readme)
-for hardware compatibility, the web flasher, clients, and unit tests
+for hardware compatibility, the official web flasher, clients, and unit tests
 (`pio test -e native` covers `src/`, which this fork does not modify).
 
 ## Goals and non-goals
