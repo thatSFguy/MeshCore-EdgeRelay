@@ -29,6 +29,7 @@ void UITask::begin(DisplayDriver* display, SensorManager* sensors, NodePrefs* no
   memset(_msgs, 0, sizeof(_msgs));
   memset(_handshakes, 0, sizeof(_handshakes));
   memset(&_out, 0, sizeof(_out));
+  memset(_clock, 0, sizeof(_clock));
   _compose[0] = 0;
   _alert[0] = 0;
 
@@ -445,18 +446,69 @@ void UITask::handleChannelControl(const char* sender, const char* body, uint8_t 
 
 // ---------------------------------------------------------------- mesh events
 
-void UITask::syncClock(uint32_t their_time) {
-  // No app to set the time: move our clock forward to the newest plausible time
-  // heard on the mesh. Never backwards; ignore nonsense far in the future.
-  uint32_t now = the_mesh.getRTCClock()->getCurrentTime();
-  if (their_time > now + 120 && their_time < 4102444800UL) {
-    the_mesh.getRTCClock()->setCurrentTime(their_time);
+// No app or GPS to set the time, so take it from the mesh, but never from one
+// node alone: a single node with a wrong clock (seen: a day fast) would drag
+// ours along, and a wrong clock makes peers drop our adverts (replay guard).
+// The clock moves only when two different senders agree within a few minutes;
+// then by the smaller of their two corrections. Either direction.
+#define CLOCK_TIME_MIN          1772323200UL   // 1 Mar 2026 (ESP32 boot seed)
+#define CLOCK_TIME_MAX          4102444800UL   // 2100
+#define CLOCK_CLOSE_ENOUGH      120            // seconds; ignore smaller differences
+#define CLOCK_AGREE_SECS        300            // two sources must agree this closely
+#define CLOCK_SAMPLE_TTL_MILLIS (30UL * 60 * 1000)
+
+static uint32_t sourceHash(const char* name) {   // FNV-1a, case-insensitive
+  uint32_t h = 2166136261UL;
+  for (; *name; name++) {
+    h ^= (uint8_t)tolower(*name);
+    h *= 16777619UL;
+  }
+  return h ? h : 1;
+}
+
+void UITask::syncClock(const char* source, uint32_t their_time) {
+  if (source == NULL || source[0] == 0) return;
+  if (their_time < CLOCK_TIME_MIN || their_time > CLOCK_TIME_MAX) return;
+  mesh::RTCClock* rtc = the_mesh.getRTCClock();
+  int64_t diff = (int64_t)their_time - (int64_t)rtc->getCurrentTime();
+  if (diff > INT32_MAX || diff < INT32_MIN) return;
+  int32_t offset = (int32_t)diff;
+  uint32_t src = sourceHash(source);
+  unsigned long now_ms = millis();
+
+  // one sample per sender: replace theirs, else an empty/expired/oldest slot
+  KClockSample* slot = NULL;
+  for (int i = 0; i < KISS_CLOCK_SAMPLES; i++) {
+    KClockSample& c = _clock[i];
+    if (c.source && now_ms - c.at > CLOCK_SAMPLE_TTL_MILLIS) c.source = 0;   // expired
+    if (c.source == src) { slot = &c; break; }
+  }
+  if (slot == NULL) {
+    for (int i = 0; i < KISS_CLOCK_SAMPLES; i++) {
+      if (_clock[i].source == 0) { slot = &_clock[i]; break; }
+      if (slot == NULL || (long)(_clock[i].at - slot->at) < 0) slot = &_clock[i];
+    }
+  }
+  slot->source = src;
+  slot->offset = offset;
+  slot->at = now_ms;
+
+  if (abs(offset) <= CLOCK_CLOSE_ENOUGH) return;   // we already agree with them
+
+  for (int i = 0; i < KISS_CLOCK_SAMPLES; i++) {
+    KClockSample& c = _clock[i];
+    if (c.source == 0 || c.source == src) continue;
+    if (abs(c.offset - offset) > CLOCK_AGREE_SECS) continue;
+    int32_t adjust = abs(c.offset) < abs(offset) ? c.offset : offset;   // the smaller correction
+    rtc->setCurrentTime(rtc->getCurrentTime() + adjust);
+    memset(_clock, 0, sizeof(_clock));   // offsets were relative to the old clock
+    return;
   }
 }
 
 void UITask::onMessageRecv(mesh::Packet *pkt, const ContactInfo &from, uint8_t txt_type, uint32_t sender_timestamp, const char* text) {
   if (!(txt_type == TXT_TYPE_PLAIN || txt_type == TXT_TYPE_SIGNED_PLAIN)) return;
-  syncClock(sender_timestamp);
+  syncClock(from.name, sender_timestamp);
   int chat = findDirectChat(from.id.pub_key);
   if (chat < 0) {
     rebuildChats();
@@ -500,7 +552,7 @@ void UITask::onChannelMessageRecv(mesh::Packet *pkt, ChannelDetails& channel_det
 }
 
 void UITask::onDiscoveredContact(ContactInfo &contact, bool is_new, uint8_t path_len, const uint8_t* path) {
-  syncClock(contact.last_advert_timestamp);
+  syncClock(contact.name, contact.last_advert_timestamp);
 }
 
 // ---------------------------------------------------------------- notifications

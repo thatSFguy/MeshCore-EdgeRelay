@@ -1,9 +1,9 @@
 import { FrameLink, hasSerial, toast, toHex, fromHex, fromBase64, toBase64, serialUnsupportedNote } from "./serial.js";
 
 // MeshCore companion protocol (examples/companion_radio/MyMesh.cpp)
-const CMD_APP_START = 1, CMD_SET_ADVERT_NAME = 8, CMD_SET_RADIO_PARAMS = 11, CMD_SET_RADIO_TX_POWER = 12,
+const CMD_APP_START = 1, CMD_GET_DEVICE_TIME = 5, CMD_SET_DEVICE_TIME = 6, CMD_SET_ADVERT_NAME = 8, CMD_SET_RADIO_PARAMS = 11, CMD_SET_RADIO_TX_POWER = 12,
   CMD_REBOOT = 19, CMD_DEVICE_QUERY = 22, CMD_GET_CHANNEL = 31, CMD_SET_CHANNEL = 32;
-const RESP_OK = 0, RESP_ERR = 1, RESP_SELF_INFO = 5, RESP_DEVICE_INFO = 13, RESP_CHANNEL_INFO = 18;
+const RESP_OK = 0, RESP_ERR = 1, RESP_SELF_INFO = 5, RESP_CURR_TIME = 9, RESP_DEVICE_INFO = 13, RESP_CHANNEL_INFO = 18;
 const PUBLIC_PSK = "izOH6cXN6mrJ5e26oRXNcg==";
 
 const $ = (s) => document.querySelector(s);
@@ -63,6 +63,27 @@ async function loadDevice() {
     <dt>Board</dt><dd>${esc(model)}</dd>
     <dt>Firmware</dt><dd class="mono">${esc(version)}</dd>
     <dt>Public key</dt><dd class="mono small">${toHex(pub)}</dd>`;
+}
+
+// Sets the device clock from this computer if it is behind. The firmware
+// refuses to move a clock backwards (replay protection), so a clock that is
+// ahead is only reported: a reboot resets it.
+async function syncClock() {
+  const r = await link.request(Uint8Array.of(CMD_GET_DEVICE_TIME));
+  if (r[0] !== RESP_CURR_TIME) return "unknown";
+  const dev = u32(r, 1);
+  const now = Math.floor(Date.now() / 1000);
+  const diff = dev - now;
+  if (Math.abs(diff) <= 60) return "correct";
+  if (diff < 0) {
+    const f = new Uint8Array(5);
+    f[0] = CMD_SET_DEVICE_TIME;
+    putU32(f, 1, now);
+    const ok = (await link.request(f))[0] === RESP_OK;
+    return ok ? "set from this computer" : "couldn't set";
+  }
+  const h = diff / 3600;
+  return `${h >= 1 ? h.toFixed(1) + " hours" : Math.round(diff / 60) + " minutes"} ahead. Reboot the device to reset it`;
 }
 
 async function loadChannels() {
@@ -133,6 +154,8 @@ $("#connect").addEventListener("click", async () => {
     await link.connect(115200);
     setConnected(true);
     await loadDevice();
+    const clock = await syncClock();
+    $("#device-kv").insertAdjacentHTML("beforeend", `<dt>Clock</dt><dd>${esc(clock)}</dd>`);
     await loadChannels();
   } catch (e) {
     if (e.name !== "NotFoundError") toast(e.message);

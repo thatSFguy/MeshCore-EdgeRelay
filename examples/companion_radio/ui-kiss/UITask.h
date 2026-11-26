@@ -63,6 +63,14 @@ struct KOutgoingDM {
   unsigned long deadline;
 };
 
+// A time heard from one sender, as an offset from our clock when heard.
+struct KClockSample {
+  uint32_t source;                // hash of the sender's name; 0 = empty
+  int32_t offset;                 // their time - our time, seconds
+  unsigned long at;               // millis() when heard
+};
+#define KISS_CLOCK_SAMPLES  8
+
 enum class KScreen : uint8_t { LIST, CHAT, PICK, MENU, NAME, ABOUT, PROMPT };
 enum class KPrompt : uint8_t { NONE, CONFIRM_REQUEST, INCOMING_REQUEST };
 
@@ -86,6 +94,7 @@ class UITask : public AbstractUITask {
   uint16_t _next_msg_id = 1;
   KHandshake _handshakes[KISS_HANDSHAKES];
   KOutgoingDM _out;
+  KClockSample _clock[KISS_CLOCK_SAMPLES];
 
   KScreen _screen = KScreen::LIST;
   KScreen _prompt_return = KScreen::LIST;
@@ -155,7 +164,7 @@ class UITask : public AbstractUITask {
   void drawAbout();
   void drawPrompt();
   void drawCompose(int y);
-  void syncClock(uint32_t their_time);
+  void syncClock(const char* source, uint32_t their_time);
   bool isDefaultName() const;
   void vibrate(uint8_t pulses);
   void vibrationLoop();
