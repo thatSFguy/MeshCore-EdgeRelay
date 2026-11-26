@@ -8,7 +8,7 @@
   #define KISS_AUTO_OFF_MILLIS  60000   // screen off after a minute without input
 #endif
 
-#define HANDSHAKE_TTL_MILLIS   (15UL * 60 * 1000)
+#define HANDSHAKE_TTL_MILLIS   (60UL * 60 * 1000)   // app users accept by hand, give them time
 #define KB_POLL_MILLIS         15
 
 // 128x64 OLED, 6x8 font: 21 columns, 8 rows
@@ -263,7 +263,11 @@ void UITask::onACKRecv(uint32_t ack_crc) {
 // In the group chat, A asks B for a DM:
 //   A: flood advert, then posts "@[B] DM request"
 //   B: accepts -> adds A (from A's advert), flood advert, posts "@[A] DM accepted"
-//   A: on "@[A] DM accepted" from B -> adds B (from B's advert)
+//   A: adds B as soon as B's advert is known (B's accept floods one)
+// The requester doesn't wait for the "accepted" text: adding someone you asked
+// to DM only lets you message them; they still choose by adding you. That way a
+// phone-app user (who has no accept button) accepts by adding the requester
+// from their discovered list and sending a flood advert.
 // The texts stay readable for people using the phone app.
 
 ContactInfo* UITask::findContactByName(const char* name) {
@@ -322,7 +326,7 @@ void UITask::requestDM(const char* name, uint8_t ch_idx) {
   KHandshake* h = findHandshake(name, true);
   h->state = HS_WAIT_ACCEPT;
   h->expires = millis() + HANDSHAKE_TTL_MILLIS;
-  showAlert("DM request sent", 2000);
+  if (!tryCompleteDM(name)) showAlert("DM request sent", 2000);   // their advert may be cached already
 }
 
 void UITask::acceptDM(const char* name, uint8_t ch_idx) {
@@ -343,7 +347,7 @@ void UITask::acceptDM(const char* name, uint8_t ch_idx) {
 // Adds the contact once the request was accepted and their advert is known.
 bool UITask::tryCompleteDM(const char* name) {
   KHandshake* h = findHandshake(name, false);
-  if (h == NULL || h->state != HS_ACCEPTED) return false;
+  if (h == NULL || h->state == HS_NONE) return false;   // requested by us, or accepted by us
 
   ContactInfo* existing = findContactByName(name);
   if (existing == NULL) {
