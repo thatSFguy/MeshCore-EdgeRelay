@@ -2,8 +2,9 @@
 
 // K.I.S.S. Messenger UI: a standalone chat interface for a companion with a
 // 128x64 OLED and an M5Stack CardKB keyboard. Mirrors the phone app's simple
-// mode: chat on a group channel, no auto-added contacts, and DMs set up by a
-// request/accept exchange in the group chat.
+// mode: chat on a group channel, no auto-added contacts, and DMs set up by the
+// app's request/accept exchange in the group chat, which carries both public
+// keys ("DM request for @[Bob] mch:r:<key>" / "DM accepted @[Alice] mch:a:...").
 
 #include <MeshCore.h>
 #include <helpers/ui/DisplayDriver.h>
@@ -26,7 +27,6 @@
 #define KISS_MAX_MSGS       48
 #define KISS_TEXT_MAX       MAX_TEXT_LEN
 #define KISS_COMPOSE_MAX    150
-#define KISS_ADVERT_CACHE   8
 #define KISS_HANDSHAKES     4
 #define KISS_DM_ATTEMPTS    3
 
@@ -50,18 +50,9 @@ struct KMsg {
   char text[KISS_TEXT_MAX + 1];   // incoming channel text keeps its "sender: " prefix
 };
 
-// Adverts heard but not added as contacts (simple mode never auto-adds); used
-// to add the other side once a DM request is accepted.
-struct KAdvert {
-  ContactInfo contact;
-  unsigned long heard_at;         // 0 = empty
-};
-
-enum KHandshakeState : uint8_t { HS_NONE, HS_WAIT_ACCEPT, HS_ACCEPTED };
-
+// A DM request we sent, waiting for "DM accepted" from that name.
 struct KHandshake {
-  char name[32];
-  uint8_t state;
+  char name[32];                  // empty = free
   unsigned long expires;
 };
 
@@ -95,7 +86,6 @@ class UITask : public AbstractUITask {
   KMsg _msgs[KISS_MAX_MSGS];
   int _msg_head = 0;              // next slot to write
   uint16_t _next_msg_id = 1;
-  KAdvert _adverts[KISS_ADVERT_CACHE];
   KHandshake _handshakes[KISS_HANDSHAKES];
   KOutgoingDM _out;
 
@@ -103,6 +93,7 @@ class UITask : public AbstractUITask {
   KScreen _prompt_return = KScreen::LIST;
   KPrompt _prompt = KPrompt::NONE;
   char _prompt_name[32];
+  uint8_t _prompt_key[PUB_KEY_SIZE];
   uint8_t _prompt_ch_idx = 0;
 
   int _list_sel = 0, _list_top = 0;
@@ -137,11 +128,10 @@ class UITask : public AbstractUITask {
 
   // DM request handshake
   ContactInfo* findContactByName(const char* name);
-  KAdvert* findAdvertByName(const char* name);
-  KHandshake* findHandshake(const char* name, bool create);
+  KHandshake* findHandshake(const char* name);
   void requestDM(const char* name, uint8_t ch_idx);
-  void acceptDM(const char* name, uint8_t ch_idx);
-  bool tryCompleteDM(const char* name);
+  void acceptDM();
+  bool addContactFromKey(const char* name, const uint8_t* pub_key);
   void handleChannelControl(const char* sender, const char* body, uint8_t ch_idx);
 
   // input + display

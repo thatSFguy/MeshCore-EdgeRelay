@@ -8,7 +8,6 @@
   #define KISS_AUTO_OFF_MILLIS  60000   // screen off after a minute without input
 #endif
 
-#define HANDSHAKE_TTL_MILLIS   (60UL * 60 * 1000)   // app users accept by hand, give them time
 #define KB_POLL_MILLIS         15
 
 // 128x64 OLED, 6x8 font: 21 columns, 8 rows
@@ -17,8 +16,6 @@
 #define C_DARK      0
 #define C_LIGHT     1
 
-static const char* DM_REQUEST_TAG  = "] DM request";
-static const char* DM_ACCEPTED_TAG = "] DM accepted";
 
 static const char* MENU_ITEMS[] = { "Send flood advert", "Send zero-hop advert", "Set name", "Sound", "About" };
 #define MENU_COUNT  5
@@ -30,7 +27,6 @@ void UITask::begin(DisplayDriver* display, SensorManager* sensors, NodePrefs* no
   _sensors = sensors;
   _node_prefs = node_prefs;
   memset(_msgs, 0, sizeof(_msgs));
-  memset(_adverts, 0, sizeof(_adverts));
   memset(_handshakes, 0, sizeof(_handshakes));
   memset(&_out, 0, sizeof(_out));
   _compose[0] = 0;
@@ -260,50 +256,92 @@ void UITask::onACKRecv(uint32_t ack_crc) {
 
 // ---------------------------------------------------------------- DM request handshake
 //
-// In the group chat, A asks B for a DM:
-//   A: flood advert, then posts "@[B] DM request"
-//   B: accepts -> adds A (from A's advert), flood advert, posts "@[A] DM accepted"
-//   A: adds B as soon as B's advert is known (B's accept floods one)
-// The requester doesn't wait for the "accepted" text: adding someone you asked
-// to DM only lets you message them; they still choose by adding you. That way a
-// phone-app user (who has no accept button) accepts by adding the requester
-// from their discovered list and sending a flood advert.
-// The texts stay readable for people using the phone app.
+// Same exchange as the phone app (simple mode), over the group channel. A DM
+// only decrypts if the sender is already a contact, and auto-add is off, so
+// both sides add each other from the keys carried in these posts:
+//   Alice: "DM request for @[Bob] mch:r:<Alice's 64-hex key>"
+//   Bob accepts -> adds Alice, then (only if that worked) posts
+//          "DM accepted @[Alice] mch:a:<first 8 hex of Alice's key>:<Bob's 64-hex key>"
+//   Alice adds Bob only if the 8 hex match her key and she has an outstanding
+//   request for that name (so nobody can add themselves by posting "accepted").
+// Decline posts nothing. No adverts are sent or needed. Contacts are added with
+// timestamp 0 (so their real adverts still update them) and a flood route.
+
+static const char* REQ_PREFIX = "DM request for @[";
+static const char* REQ_KEY    = "] mch:r:";
+static const char* ACC_PREFIX = "DM accepted @[";
+static const char* ACC_KEY    = "] mch:a:";
+
+#define HANDSHAKE_TTL_MILLIS   (7UL * 24 * 3600 * 1000)   // 7 days, as the app
 
 ContactInfo* UITask::findContactByName(const char* name) {
+  ContactInfo* found = NULL;
   ContactsIterator it = the_mesh.startContactsIterator();
   ContactInfo ci;
   while (it.hasNext(&the_mesh, ci)) {
-    if (strcmp(ci.name, name) == 0) return the_mesh.lookupContactByPubKey(ci.id.pub_key, PUB_KEY_SIZE);
+    if (ci.type == ADV_TYPE_CHAT && strcasecmp(ci.name, name) == 0) {
+      if (found) return NULL;   // ambiguous: more than one person with this name
+      found = the_mesh.lookupContactByPubKey(ci.id.pub_key, PUB_KEY_SIZE);
+    }
+  }
+  return found;
+}
+
+KHandshake* UITask::findHandshake(const char* name) {
+  for (int i = 0; i < KISS_HANDSHAKES; i++) {
+    KHandshake& h = _handshakes[i];
+    if (h.name[0] && (long)(millis() - h.expires) > 0) h.name[0] = 0;   // expired
+    if (h.name[0] && strcasecmp(h.name, name) == 0) return &h;
   }
   return NULL;
 }
 
-KAdvert* UITask::findAdvertByName(const char* name) {
-  KAdvert* best = NULL;
-  for (int i = 0; i < KISS_ADVERT_CACHE; i++) {
-    KAdvert& a = _adverts[i];
-    if (a.heard_at && strcmp(a.contact.name, name) == 0) {
-      if (best == NULL || (long)(a.heard_at - best->heard_at) > 0) best = &a;   // newest wins
-    }
-  }
-  return best;
+// Parses "<prefix><name><mid><hex>"; copies name and returns the hex part.
+static const char* parseControl(const char* body, const char* prefix, const char* mid, char* name, int name_size) {
+  int plen = strlen(prefix);
+  if (strncmp(body, prefix, plen) != 0) return NULL;
+  const char* n = body + plen;
+  const char* m = strstr(n, mid);
+  if (m == NULL || m == n || m - n >= name_size) return NULL;
+  memcpy(name, n, m - n);
+  name[m - n] = 0;
+  return m + strlen(mid);
 }
 
-KHandshake* UITask::findHandshake(const char* name, bool create) {
-  KHandshake* free_slot = NULL;
-  for (int i = 0; i < KISS_HANDSHAKES; i++) {
-    KHandshake& h = _handshakes[i];
-    if (h.state != HS_NONE && (long)(millis() - h.expires) > 0) h.state = HS_NONE;   // expired
-    if (h.state != HS_NONE && strcmp(h.name, name) == 0) return &h;
-    if (h.state == HS_NONE && free_slot == NULL) free_slot = &h;
+static bool readHex(const char* src, uint8_t* dest, int bytes) {
+  char buf[PUB_KEY_SIZE * 2 + 1];
+  if (bytes * 2 >= (int)sizeof(buf)) return false;
+  for (int i = 0; i < bytes * 2; i++) {
+    if (!mesh::Utils::isHexChar(src[i])) return false;
+    buf[i] = src[i];
   }
-  if (!create) return NULL;
-  if (free_slot == NULL) free_slot = &_handshakes[0];
-  memset(free_slot, 0, sizeof(*free_slot));
-  StrHelper::strncpy(free_slot->name, name, sizeof(free_slot->name));
-  free_slot->expires = millis() + HANDSHAKE_TTL_MILLIS;
-  return free_slot;
+  buf[bytes * 2] = 0;
+  return mesh::Utils::fromHex(dest, bytes, buf);
+}
+
+// Lowercase hex, as the app writes it (MeshCore's toHex() is uppercase), in case
+// the app compares the key text exactly.
+static void toLowerHex(char* dest, const uint8_t* src, size_t len) {
+  mesh::Utils::toHex(dest, src, len);
+  for (char* c = dest; *c; c++) *c = tolower(*c);
+}
+
+bool UITask::addContactFromKey(const char* name, const uint8_t* pub_key) {
+  if (memcmp(pub_key, the_mesh.self_id.pub_key, PUB_KEY_SIZE) == 0) return false;
+  if (the_mesh.lookupContactByPubKey(pub_key, PUB_KEY_SIZE) == NULL) {
+    ContactInfo ci;
+    memset(&ci, 0, sizeof(ci));
+    ci.id = mesh::Identity(pub_key);
+    StrHelper::strncpy(ci.name, name, sizeof(ci.name));
+    ci.type = ADV_TYPE_CHAT;
+    ci.out_path_len = OUT_PATH_UNKNOWN;   // first DM floods; route learned from the reply
+    ci.last_advert_timestamp = 0;         // their real adverts must still be accepted
+    ci.lastmod = the_mesh.getRTCClock()->getCurrentTime();
+    if (!the_mesh.addContact(ci)) return false;
+    the_mesh.persistContacts();
+  }
+  rebuildChats();
+  return true;
 }
 
 void UITask::requestDM(const char* name, uint8_t ch_idx) {
@@ -313,9 +351,14 @@ void UITask::requestDM(const char* name, uint8_t ch_idx) {
     if (idx >= 0) openChat(idx);
     return;
   }
-  char text[64];
-  snprintf(text, sizeof(text), "@[%s%s", name, DM_REQUEST_TAG);
-  the_mesh.floodAdvert();                  // so they can add us when they accept
+  char hex[PUB_KEY_SIZE * 2 + 1];
+  toLowerHex(hex, the_mesh.self_id.pub_key, PUB_KEY_SIZE);
+  char text[KISS_TEXT_MAX + 1];
+  snprintf(text, sizeof(text), "%s%s%s%s", REQ_PREFIX, name, REQ_KEY, hex);
+  if ((int)(strlen(text) + strlen(_node_prefs->node_name) + 2) > KISS_TEXT_MAX) {
+    showAlert("Names too long", 2000);   // the firmware would cut the key off
+    return;
+  }
   if (!sendChannelText(ch_idx, text)) {
     showAlert("Send failed", 1500);
     return;
@@ -323,69 +366,69 @@ void UITask::requestDM(const char* name, uint8_t ch_idx) {
   int chat = findChannelChat(ch_idx);
   addMsg(chat, MSG_OUT, text);
   markActivity(chat, false);
-  KHandshake* h = findHandshake(name, true);
-  h->state = HS_WAIT_ACCEPT;
-  h->expires = millis() + HANDSHAKE_TTL_MILLIS;
-  if (!tryCompleteDM(name)) showAlert("DM request sent", 2000);   // their advert may be cached already
-}
 
-void UITask::acceptDM(const char* name, uint8_t ch_idx) {
-  char text[64];
-  snprintf(text, sizeof(text), "@[%s%s", name, DM_ACCEPTED_TAG);
-  the_mesh.floodAdvert();                  // so they can add us
-  if (sendChannelText(ch_idx, text)) {
-    int chat = findChannelChat(ch_idx);
-    addMsg(chat, MSG_OUT, text);
-    markActivity(chat, false);
-  }
-  KHandshake* h = findHandshake(name, true);
-  h->state = HS_ACCEPTED;
-  h->expires = millis() + HANDSHAKE_TTL_MILLIS;
-  if (!tryCompleteDM(name)) showAlert("Waiting for advert", 2000);
-}
-
-// Adds the contact once the request was accepted and their advert is known.
-bool UITask::tryCompleteDM(const char* name) {
-  KHandshake* h = findHandshake(name, false);
-  if (h == NULL || h->state == HS_NONE) return false;   // requested by us, or accepted by us
-
-  ContactInfo* existing = findContactByName(name);
-  if (existing == NULL) {
-    KAdvert* a = findAdvertByName(name);
-    if (a == NULL) return false;           // completes when their advert arrives
-    ContactInfo ci = a->contact;
-    ci.out_path_len = OUT_PATH_UNKNOWN;    // first message floods; the path is learned from the reply
-    if (!the_mesh.addContact(ci)) {
-      showAlert("Contacts full", 2000);
-      return false;
+  KHandshake* h = findHandshake(name);
+  if (h == NULL) {
+    h = &_handshakes[0];
+    for (int i = 0; i < KISS_HANDSHAKES; i++) {
+      if (_handshakes[i].name[0] == 0) { h = &_handshakes[i]; break; }
+      if ((long)(_handshakes[i].expires - h->expires) < 0) h = &_handshakes[i];   // replace soonest to expire
     }
-    the_mesh.persistContacts();
-    rebuildChats();
   }
-  h->state = HS_NONE;
+  StrHelper::strncpy(h->name, name, sizeof(h->name));
+  h->expires = millis() + HANDSHAKE_TTL_MILLIS;
+  showAlert("DM request sent", 2000);
+}
+
+void UITask::acceptDM() {
+  if (!addContactFromKey(_prompt_name, _prompt_key)) {
+    showAlert("Couldn't add contact", 2000);
+    return;
+  }
+  char req_hex[9], my_hex[PUB_KEY_SIZE * 2 + 1];
+  toLowerHex(req_hex, _prompt_key, 4);
+  toLowerHex(my_hex, the_mesh.self_id.pub_key, PUB_KEY_SIZE);
+  char text[KISS_TEXT_MAX + 1];
+  snprintf(text, sizeof(text), "%s%s%s%s:%s", ACC_PREFIX, _prompt_name, ACC_KEY, req_hex, my_hex);
+  if ((int)(strlen(text) + strlen(_node_prefs->node_name) + 2) > KISS_TEXT_MAX || !sendChannelText(_prompt_ch_idx, text)) {
+    showAlert("Accept not sent", 2000);
+    return;
+  }
+  int chat = findChannelChat(_prompt_ch_idx);
+  addMsg(chat, MSG_OUT, text);
+  markActivity(chat, false);
   char msg[48];
-  snprintf(msg, sizeof(msg), "DM with %s ready", name);
+  snprintf(msg, sizeof(msg), "DM with %s ready", _prompt_name);
   showAlert(msg, 2500);
-  notify(UIEventType::newContactMessage);
-  return true;
 }
 
 void UITask::handleChannelControl(const char* sender, const char* body, uint8_t ch_idx) {
-  char prefix[40];
-  snprintf(prefix, sizeof(prefix), "@[%s", _node_prefs->node_name);
-  int plen = strlen(prefix);
-  if (strncmp(body, prefix, plen) != 0) return;
-  const char* rest = body + plen;
-
-  if (strncmp(rest, DM_REQUEST_TAG, strlen(DM_REQUEST_TAG)) == 0) {
-    if (findContactByName(sender)) return;   // already set up
+  if (strcasecmp(sender, _node_prefs->node_name) == 0) return;   // our own post
+  char name[32];
+  const char* hex = parseControl(body, REQ_PREFIX, REQ_KEY, name, sizeof(name));
+  if (hex) {
+    uint8_t key[PUB_KEY_SIZE];
+    if (strcasecmp(name, _node_prefs->node_name) != 0 || !readHex(hex, key, PUB_KEY_SIZE)) return;
+    if (the_mesh.lookupContactByPubKey(key, PUB_KEY_SIZE)) return;   // already a contact
+    memcpy(_prompt_key, key, PUB_KEY_SIZE);
     showPrompt(KPrompt::INCOMING_REQUEST, sender, ch_idx);
     notify(UIEventType::contactMessage);
-  } else if (strncmp(rest, DM_ACCEPTED_TAG, strlen(DM_ACCEPTED_TAG)) == 0) {
-    KHandshake* h = findHandshake(sender, false);
-    if (h == NULL || h->state != HS_WAIT_ACCEPT) return;   // we didn't ask
-    h->state = HS_ACCEPTED;
-    if (!tryCompleteDM(sender)) showAlert("Accepted, waiting advert", 2000);
+    return;
+  }
+  hex = parseControl(body, ACC_PREFIX, ACC_KEY, name, sizeof(name));
+  if (hex) {
+    uint8_t prefix[4], key[PUB_KEY_SIZE];
+    if (!readHex(hex, prefix, 4) || hex[8] != ':' || !readHex(hex + 9, key, PUB_KEY_SIZE)) return;
+    if (memcmp(prefix, the_mesh.self_id.pub_key, 4) != 0) return;   // not accepting *our* request
+    KHandshake* h = findHandshake(sender);
+    if (h == NULL) return;                                          // we didn't ask them
+    if (addContactFromKey(sender, key)) {
+      h->name[0] = 0;
+      char msg[48];
+      snprintf(msg, sizeof(msg), "DM with %s ready", sender);
+      showAlert(msg, 2500);
+      notify(UIEventType::newContactMessage);
+    }
   }
 }
 
@@ -447,27 +490,6 @@ void UITask::onChannelMessageRecv(mesh::Packet *pkt, ChannelDetails& channel_det
 
 void UITask::onDiscoveredContact(ContactInfo &contact, bool is_new, uint8_t path_len, const uint8_t* path) {
   syncClock(contact.last_advert_timestamp);
-  if (contact.type != ADV_TYPE_CHAT) return;
-
-  // cache it (replace same key, else oldest)
-  KAdvert* slot = NULL;
-  for (int i = 0; i < KISS_ADVERT_CACHE; i++) {
-    if (_adverts[i].heard_at && memcmp(_adverts[i].contact.id.pub_key, contact.id.pub_key, PUB_KEY_SIZE) == 0) {
-      slot = &_adverts[i];
-      break;
-    }
-  }
-  if (slot == NULL) {
-    slot = &_adverts[0];
-    for (int i = 0; i < KISS_ADVERT_CACHE; i++) {
-      if (_adverts[i].heard_at == 0) { slot = &_adverts[i]; break; }
-      if ((long)(_adverts[i].heard_at - slot->heard_at) < 0) slot = &_adverts[i];
-    }
-  }
-  slot->contact = contact;
-  slot->heard_at = millis() | 1;   // never 0
-
-  tryCompleteDM(contact.name);   // an accepted request waiting on this advert
 }
 
 // ---------------------------------------------------------------- notifications
@@ -679,7 +701,7 @@ void UITask::keyPrompt(int key) {
   _prompt = KPrompt::NONE;
   _screen = _prompt_return;
   if (yes && p == KPrompt::CONFIRM_REQUEST) requestDM(_prompt_name, _prompt_ch_idx);
-  if (yes && p == KPrompt::INCOMING_REQUEST) acceptDM(_prompt_name, _prompt_ch_idx);
+  if (yes && p == KPrompt::INCOMING_REQUEST) acceptDM();   // decline posts nothing, as the app
 }
 
 void UITask::handleKey(int key) {
@@ -802,6 +824,8 @@ void UITask::drawChat() {
     else if (m.status == MSG_OUT_FAILED) mark = " !";
     char text[KISS_TEXT_MAX + 1];
     _display->translateUTF8ToBlocks(text, m.text, sizeof(text));
+    char* mch = strstr(text, "] mch:");
+    if (mch) mch[1] = 0;   // "DM request for @[Bob]" without the key
     snprintf(buf, sizeof(buf), "%s%s%s", m.status == MSG_IN ? "" : ">", text, mark);
     int n = wrapText(buf, wrapped, 12);
     // prepend (we walk newest -> oldest)
@@ -870,19 +894,23 @@ void UITask::drawAbout() {
 }
 
 void UITask::drawPrompt() {
-  const char* title = _prompt == KPrompt::INCOMING_REQUEST ? "DM request" : "Request DM?";
+  const char* title = _prompt == KPrompt::INCOMING_REQUEST ? "DM request" : "Message privately?";
   drawTitle(title, NULL);
   char line[48];
-  if (_prompt == KPrompt::INCOMING_REQUEST) snprintf(line, sizeof(line), "%s wants to DM you.", _prompt_name);
+  if (_prompt == KPrompt::INCOMING_REQUEST) {
+    char hex[9];
+    toLowerHex(hex, _prompt_key, 4);
+    snprintf(line, sizeof(line), "%s wants to message you privately. Key %s", _prompt_name, hex);
+  }
   else snprintf(line, sizeof(line), "Ask %s for a DM?", _prompt_name);
-  char wrapped[4][COLS + 1];
-  int n = wrapText(line, wrapped, 4);
+  char wrapped[5][COLS + 1];
+  int n = wrapText(line, wrapped, 5);
   for (int i = 0; i < n; i++) {
-    _display->setCursor(0, ROW_H + 4 + i * ROW_H);
+    _display->setCursor(0, ROW_H + 2 + i * ROW_H);
     _display->print(wrapped[i]);
   }
   _display->setCursor(0, _display->height() - ROW_H);
-  _display->print(_prompt == KPrompt::INCOMING_REQUEST ? "Enter=accept Esc=no" : "Enter=yes Esc=no");
+  _display->print(_prompt == KPrompt::INCOMING_REQUEST ? "Enter=accept Esc=decl" : "Enter=yes Esc=no");
 }
 
 void UITask::render() {

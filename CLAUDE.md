@@ -58,8 +58,11 @@ bridges that one hop. A moving node must not act like a normal repeater, so:
   a standalone on-device chat UI in `examples/companion_radio/ui-kiss/` (CardKB
   keyboard, OLED, buzzer GPIO 15, vibration GPIO 13, no BLE), plus two small
   public additions to the companion's `MyMesh`: `floodAdvert()` and
-  `persistContacts()`. Simple mode: no auto-added contacts; DMs are set up by an
-  "@[name] DM request" / "@[name] DM accepted" exchange in the group chat.
+  `persistContacts()`. Simple mode: no auto-added contacts; DMs are set up by the
+  phone app's exchange in the group chat, which carries both public keys:
+  "DM request for @[Bob] mch:r:<64 hex>" and
+  "DM accepted @[Alice] mch:a:<8 hex of Alice's key>:<64 hex>". Keep this
+  format identical to the app's; no adverts are involved.
 - Every board's `<board>_personal_relay` env mirrors its `_repeater` env with
   only the example and `ADVERT_NAME` changed.
 
