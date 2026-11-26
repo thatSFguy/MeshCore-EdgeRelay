@@ -58,7 +58,8 @@ async function loadStatus() {
   const nm = name.replace(/^>\s*/, "");
   $("#name").value = nm;
   const rp = radio.replace(/^>\s*/, "").split(",");
-  if (rp.length === 4) [$("#freq").value, $("#bw").value, $("#sf").value, $("#cr").value] = rp;
+  if (rp.length === 4) [$("#freq").value, $("#bw").value, $("#sf").value, $("#cr").value] = rp.map((v) => v.trim());
+  matchPreset();
   $("#tx").value = tx.replace(/^>\s*/, "");
 
   const s = kv(st);
@@ -72,6 +73,15 @@ async function loadStatus() {
   ];
   $("#stats").innerHTML = stats.map(([k, label]) =>
     `<div class="stat"><div class="v">${esc(s[k] ?? "–")}</div><div class="k">${label}</div></div>`).join("");
+}
+
+// Selects the preset matching the radio fields (numerically: the relay may
+// print extra decimals), or Custom.
+function matchPreset() {
+  const cur = ["#freq", "#bw", "#sf", "#cr"].map((s) => parseFloat($(s).value));
+  const opt = [...$("#preset").options].find((o) =>
+    o.value && o.value.split(",").every((v, i) => Math.abs(parseFloat(v) - cur[i]) < 0.0005));
+  $("#preset").value = opt ? opt.value : "";
 }
 
 async function loadOwners() {
@@ -213,6 +223,12 @@ $("#password-save").addEventListener("click", async () => {
   toast(/password now/.test(r) ? "Password set" : r);
   $("#password").value = "";
 });
+$("#preset").addEventListener("change", () => {
+  const v = $("#preset").value;
+  if (v) [$("#freq").value, $("#bw").value, $("#sf").value, $("#cr").value] = v.split(",");
+});
+for (const id of ["#freq", "#bw", "#sf", "#cr"]) $(id).addEventListener("input", matchPreset);
+
 $("#radio-save").addEventListener("click", async () => {
   const r = await cmd(`set radio ${$("#freq").value},${$("#bw").value},${$("#sf").value},${$("#cr").value}`);
   if ($("#tx").value !== "") await cmd(`set tx ${$("#tx").value}`);
