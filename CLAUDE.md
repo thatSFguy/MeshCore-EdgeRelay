@@ -49,7 +49,8 @@ bridges that one hop. A moving node must not act like a normal repeater, so:
 - `src/` and the stock examples stay identical to upstream, except the portable
   `ltoa()` replacement in `src/helpers/TxtDataHelpers.cpp` (STM32 builds).
 - Also fork-only: `LilyGo_TLora_V2_1_1_6_companion_radio_ble_gps` (stock
-  companion + external GPS on GPIO 34/13) in `variants/lilygo_tlora_v2_1`, with a
+  companion + external GPS on GPIO 15/13, TX/RX auto-detected at boot by
+  `LilyGoTLoraBoard::begin()`) in `variants/lilygo_tlora_v2_1`, with a
   `LocationProvider::sendSentence()` definition in its `target.cpp` working
   around an upstream link bug.
 - Every board's `<board>_personal_relay` env mirrors its `_repeater` env with

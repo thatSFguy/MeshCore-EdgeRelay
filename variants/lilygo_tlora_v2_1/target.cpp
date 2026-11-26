@@ -12,6 +12,11 @@ ESP32RTCClock fallback_clock;
 AutoDiscoverRTCClock rtc_clock(fallback_clock);
 #if ENV_INCLUDE_GPS
   #include <helpers/sensors/MicroNMEALocationProvider.h>
+  #if defined(GPS_PIN_A) && defined(GPS_PIN_B)
+    // set by LilyGoTLoraBoard::begin() (see TLoraGpsPins.h)
+    int8_t tlora_gps_tx_pin = GPS_PIN_A;
+    int8_t tlora_gps_rx_pin = GPS_PIN_B;
+  #endif
   MicroNMEALocationProvider nmea = MicroNMEALocationProvider(Serial1, &rtc_clock);
   EnvironmentSensorManager sensors = EnvironmentSensorManager(nmea);
   // Upstream (v1.18) declares LocationProvider::sendSentence() virtual but never
