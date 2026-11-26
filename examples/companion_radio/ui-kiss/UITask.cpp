@@ -55,12 +55,22 @@ void UITask::begin(DisplayDriver* display, SensorManager* sensors, NodePrefs* no
   if (_display) _display->turnOn();
   _auto_off = millis() + KISS_AUTO_OFF_MILLIS;
 
-  if (strcmp(_node_prefs->node_name, "NONAME") == 0 || _node_prefs->node_name[0] == 0) {
+  if (isDefaultName()) {
     _screen = KScreen::NAME;   // first boot: pick a name before chatting
     _compose[0] = 0;
     _compose_len = 0;
   }
   if (!_kb.isPresent()) showAlert("No keyboard found", 3000);
+}
+
+// The companion's default name is the first 4 bytes of the public key in hex
+// (or "NONAME" on older firmware): ask for a real name before chatting.
+bool UITask::isDefaultName() const {
+  const char* n = _node_prefs->node_name;
+  if (n[0] == 0 || strcmp(n, "NONAME") == 0) return true;
+  char key_hex[9];
+  mesh::Utils::toHex(key_hex, the_mesh.self_id.pub_key, 4);
+  return strcasecmp(n, key_hex) == 0;
 }
 
 // ---------------------------------------------------------------- chats + messages
@@ -718,7 +728,7 @@ void UITask::keyName(int key) {
     _compose_len = 0;
     _screen = KScreen::LIST;
     showAlert("Name saved", 1500);
-  } else if (key == KEY_KB_ESC && strcmp(_node_prefs->node_name, "NONAME") != 0) {
+  } else if (key == KEY_KB_ESC && !isDefaultName()) {
     _compose[0] = 0;
     _compose_len = 0;
     _screen = KScreen::MENU;

@@ -156,6 +156,7 @@ class UITask : public AbstractUITask {
   void drawPrompt();
   void drawCompose(int y);
   void syncClock(uint32_t their_time);
+  bool isDefaultName() const;
   void vibrate(uint8_t pulses);
   void vibrationLoop();
 
