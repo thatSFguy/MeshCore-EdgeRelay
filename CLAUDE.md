@@ -52,7 +52,8 @@ bridges that one hop. A moving node must not act like a normal repeater, so:
   companion + external GPS on GPIO 15/13, TX/RX auto-detected at boot by
   `LilyGoTLoraBoard::begin()`) in `variants/lilygo_tlora_v2_1`, with a
   `LocationProvider::sendSentence()` definition in its `target.cpp` working
-  around an upstream link bug.
+  around an upstream link bug, and `GPS_ENABLED_BY_DEFAULT` (opt-in flag, only
+  this env) in `examples/companion_radio/MyMesh.cpp`.
 - Every board's `<board>_personal_relay` env mirrors its `_repeater` env with
   only the example and `ADVERT_NAME` changed.
 

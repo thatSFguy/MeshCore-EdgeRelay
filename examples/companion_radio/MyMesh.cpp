@@ -923,7 +923,11 @@ MyMesh::MyMesh(mesh::Radio &radio, mesh::RNG &rng, mesh::RTCClock &rtc, SimpleMe
   _prefs.bw = LORA_BW;
   _prefs.cr = LORA_CR;
   _prefs.tx_power_dbm = LORA_TX_POWER;
+#ifdef GPS_ENABLED_BY_DEFAULT
+  _prefs.gps_enabled = 1;       // on by default; only takes effect if a GPS module is detected
+#else
   _prefs.gps_enabled = 0;       // GPS disabled by default
+#endif
   _prefs.gps_interval = 0;      // No automatic GPS updates by default
   _prefs.radio_fem_rxgain = 1;
 #ifdef RADIO_FEM_TXGAIN
