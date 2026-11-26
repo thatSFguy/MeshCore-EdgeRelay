@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MeshCore EdgeRelay</title>
+<meta name="description" content="Install and configure the MeshCore Personal Relay and the K.I.S.S. Messenger from your browser.">
+<link rel="icon" href="assets/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+<header class="top"><div class="top-inner">
+  <a class="brand" href="./">Mesh<span>Core</span> EdgeRelay</a>
+  <nav class="nav">
+    <a href="program.html">Install</a>
+    <a href="relay.html">Configure relay</a>
+    <a href="kiss.html">Configure K.I.S.S.</a>
+    <a href="https://github.com/thatSFguy/MeshCore-EdgeRelay">GitHub</a>
+  </nav>
+</div></header>
+
+<main>
+  <h1>Install and set up your devices</h1>
+  <p class="lead">Two MeshCore firmwares built on the official MeshCore releases:
+    a Personal Relay for your car and the K.I.S.S. Messenger for chatting without a phone.
+    Install and configure both from this page, over USB.</p>
+
+  <div class="cards">
+    <div class="card">
+      <h2>Install firmware</h2>
+      <p>Pick your board and flash it from the browser, or download the file for boards
+        that install by drag and drop.</p>
+      <a class="button primary" href="program.html">Install</a>
+    </div>
+    <div class="card">
+      <h2>Personal Relay</h2>
+      <p>Owners, channels, home detection and radio settings for a relay connected by USB.</p>
+      <a class="button" href="relay.html">Configure relay</a>
+    </div>
+    <div class="card">
+      <h2>K.I.S.S. Messenger</h2>
+      <p>Name, radio and channels, including adding a private channel, for a K.I.S.S. Messenger
+        connected by USB.</p>
+      <a class="button" href="kiss.html">Configure K.I.S.S.</a>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Personal Relay</h2>
+    <p>A relay you leave in a parked car. It gives your own companions one extra hop into the
+      mesh, and stays quiet otherwise: it forwards only what your companions send, copies
+      messages meant for them back down to them, and drops everything else. It never
+      advertises itself, so the mesh never learns a route through a moving car. Optional home
+      detection pauses it while you're parked at home.</p>
+  </div>
+
+  <div class="card">
+    <h2>K.I.S.S. Messenger</h2>
+    <p>A LilyGo T-LoRa V2.1-1.6 with an M5Stack CardKB keyboard, a buzzer and a vibration motor:
+      read and type messages right on the device, no phone needed. It works like the app's
+      simple mode: chat on a group channel, and set up a private DM by requesting one in the
+      group chat.</p>
+  </div>
+
+  <div class="card">
+    <h2>What you need</h2>
+    <ul>
+      <li>A USB data cable (some cables only charge).</li>
+      <li>Desktop <strong>Chrome</strong> or <strong>Edge</strong> to flash ESP32 boards and to
+        configure. Phones and Firefox/Safari can browse this site and download firmware, but
+        can't talk to USB devices.</li>
+    </ul>
+  </div>
+</main>
+
+<footer>
+  Based on <a href="https://github.com/meshcore-dev/MeshCore">MeshCore</a> (MIT).
+  Source: <a href="https://github.com/thatSFguy/MeshCore-EdgeRelay">thatSFguy/MeshCore-EdgeRelay</a>.
+</footer>
+</body>
+</html>

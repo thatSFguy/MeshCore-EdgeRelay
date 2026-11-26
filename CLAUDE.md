@@ -66,6 +66,18 @@ bridges that one hop. A moving node must not act like a normal repeater, so:
 - Every board's `<board>_personal_relay` env mirrors its `_repeater` env with
   only the example and `ADVERT_NAME` changed.
 
+## Website (`site/`)
+
+Static GitHub Pages site, no build step: `index.html` (landing), `program.html`
+(install: ESP Web Tools for ESP32, .uf2/.hex downloads otherwise),
+`relay.html` (relay USB text CLI over Web Serial), `kiss.html` (companion
+binary protocol over Web Serial). Desktop Chrome/Edge only for USB.
+`.github/workflows/github-pages.yml` (manual) builds the K.I.S.S. firmware,
+downloads the newest published personal-relay release, and runs
+`tools/build_site_manifest.py` to index `site/firmware/` (chip family read from
+the ESP image header, nRF52/RP2040 from the UF2 family ID). If relay or
+companion CLI/protocol replies change, update the parsers in `site/assets/`.
+
 ## Upstream merge checklist
 
 1. `git fetch upstream` (remote: `meshcore-dev/MeshCore`); merge `upstream/main`

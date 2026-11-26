@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Configure Relay</title>
+<meta name="description" content="Configure a MeshCore Personal Relay over USB from the browser.">
+<link rel="icon" href="assets/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+<header class="top"><div class="top-inner">
+  <a class="brand" href="./">Mesh<span>Core</span> EdgeRelay</a>
+  <nav class="nav">
+    <a href="program.html">Install</a>
+    <a href="relay.html" aria-current="page">Configure relay</a>
+    <a href="kiss.html">Configure K.I.S.S.</a>
+    <a href="https://github.com/thatSFguy/MeshCore-EdgeRelay">GitHub</a>
+  </nav>
+</div></header>
+
+<main>
+  <h1>Configure Personal Relay</h1>
+  <p class="lead">Connect the relay by USB. Every change is saved on the relay as soon as you apply it.</p>
+  <div id="unsupported"></div>
+
+  <div class="conn">
+    <span class="dot" id="dot"></span>
+    <span class="status" id="status">Not connected</span>
+    <button class="primary" id="connect">Connect</button>
+  </div>
+
+  <div id="panels" hidden>
+    <div class="card">
+      <h2>Status</h2>
+      <dl class="kv" id="device-kv"></dl>
+      <div class="stats" id="stats" style="margin-top:14px"></div>
+      <div class="actions"><button id="refresh">Refresh</button><button id="advert">Send zero-hop advert</button></div>
+    </div>
+
+    <div class="card">
+      <h2>Owners</h2>
+      <p class="muted small" style="margin-top:0">Your companions. The relay forwards only what they send and copies messages for them back down. Until at least one owner is added, the relay only receives.</p>
+      <ul class="list" id="owners"></ul>
+      <div class="row">
+        <div class="field wide"><label for="owner-key">Companion public key (64 hex characters)</label>
+          <input id="owner-key" class="mono" placeholder="e.g. 3f9a…" autocomplete="off" spellcheck="false"></div>
+        <button id="owner-add">Add owner</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Group channels</h2>
+      <p class="muted small" style="margin-top:0">Channels the relay carries for you. Channel messages, including your own, are dropped unless their channel is here.</p>
+      <ul class="list" id="chans"></ul>
+      <div class="row">
+        <div class="field wide"><label for="chan-key">Channel key (hex or base64), or <code>public</code></label>
+          <input id="chan-key" class="mono" placeholder="public" autocomplete="off" spellcheck="false"></div>
+        <button id="chan-add">Add channel</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Echo suppression</h2>
+      <p class="muted small" style="margin-top:0">Holds each uplink briefly and cancels it if another repeater already re-sent it, so the relay stays quiet when your companion reaches the mesh on its own.</p>
+      <label class="check"><input type="checkbox" id="echo-on"> Enabled</label>
+      <div class="row">
+        <div class="field"><label for="echo-wait">Extra hold (packet airtimes, 0–20)</label>
+          <input id="echo-wait" type="number" min="0" max="20"></div>
+        <button id="echo-save">Apply</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Home detection</h2>
+      <p class="muted small" style="margin-top:0">Pauses all relaying while the car is parked at home, judged by the signal strength of your home node.</p>
+      <p id="home-state" class="mono small"></p>
+      <div class="row">
+        <div class="field wide"><label for="home-key">Home node public key (or prefix)</label>
+          <input id="home-key" class="mono" autocomplete="off" spellcheck="false"></div>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <div class="field"><label for="home-enter">Home at (dBm)</label><input id="home-enter" type="number" value="-60"></div>
+        <div class="field"><label for="home-exit">Away below (dBm)</label><input id="home-exit" type="number" value="-80"></div>
+        <div class="field"><label for="home-timeout">Timeout (min)</label><input id="home-timeout" type="number" value="10" min="1" max="240"></div>
+      </div>
+      <div class="actions">
+        <button id="home-set">Set home node</button>
+        <button id="home-off">Turn off</button>
+        <button id="home-override">Relay at home for 30 min</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Options</h2>
+      <label class="check"><input type="checkbox" id="opt-owner_direct"> Carry owner direct messages on stored routes</label>
+      <label class="check"><input type="checkbox" id="opt-mirror_adverts"> Mirror remote adverts to owners</label>
+      <label class="check"><input type="checkbox" id="opt-fwd_acks"> Forward ACKs</label>
+    </div>
+
+    <div class="card">
+      <h2>Device</h2>
+      <div class="row">
+        <div class="field wide"><label for="name">Name</label><input id="name" maxlength="31"></div>
+        <button id="name-save">Save name</button>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <div class="field wide"><label for="password">Admin password (for app login)</label><input id="password" type="password" autocomplete="new-password"></div>
+        <button id="password-save">Set password</button>
+      </div>
+      <h3>Radio</h3>
+      <div class="row">
+        <div class="field"><label for="freq">Frequency (MHz)</label><input id="freq" type="number" step="0.001"></div>
+        <div class="field"><label for="bw">Bandwidth (kHz)</label><input id="bw" type="number" step="0.1"></div>
+        <div class="field"><label for="sf">SF</label><input id="sf" type="number" min="5" max="12"></div>
+        <div class="field"><label for="cr">CR</label><input id="cr" type="number" min="5" max="8"></div>
+        <div class="field"><label for="tx">TX power (dBm)</label><input id="tx" type="number"></div>
+      </div>
+      <p class="muted small">Radio settings must match your mesh. They take effect after a reboot.</p>
+      <div class="actions"><button id="radio-save">Save radio</button><button id="reboot" class="danger">Reboot</button></div>
+    </div>
+
+    <div class="card">
+      <h2>Console</h2>
+      <pre class="log" id="log" aria-live="polite"></pre>
+      <div class="row">
+        <div class="field wide"><label for="cmd">Command</label><input id="cmd" class="mono" placeholder="edge help" autocomplete="off" spellcheck="false"></div>
+        <button id="cmd-send">Send</button>
+      </div>
+    </div>
+  </div>
+</main>
+
+<footer>Commands are the relay's USB console commands; see the
+  <a href="https://github.com/thatSFguy/MeshCore-EdgeRelay#edge-command-reference">command reference</a>.</footer>
+<script type="module" src="assets/relay.js"></script>
+</body>
+</html>

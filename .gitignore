@@ -17,3 +17,6 @@ compile_commands.json
 .venv/
 venv/
 platformio.local.ini
+
+# GitHub Pages site: firmware is added by the Pages workflow
+site/firmware/
