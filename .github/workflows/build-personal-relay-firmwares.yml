@@ -34,7 +34,7 @@ jobs:
         id: version
         shell: bash
         run: |
-          # same version build.sh gives personal relay files, e.g: v1.17.1-er-abc1234
+          # same version build.sh gives personal relay files, e.g: v1.18.0-er-abc1234
           UPSTREAM_VERSION=$(sed -n 's/^#define UPSTREAM_VERSION *"\(.*\)".*/\1/p' examples/personal_relay/MyMesh.h)
           if [ -z "$UPSTREAM_VERSION" ]; then
             echo "UPSTREAM_VERSION not found in examples/personal_relay/MyMesh.h"

@@ -27,16 +27,18 @@ stock `simple_repeater` example, which is left untouched:
 
 ## Upstream base and versioning
 
-Based on **MeshCore v1.17.1** (tag `repeater-v1.17.1`, commit `d929643`).
-Core code in `src/` and the stock examples are unmodified from that tag;
-upstream `main` has only documentation changes since.
+Based on **MeshCore v1.18.0** (tag `repeater-v1.18.0`, commit `81dbae5`),
+merged from upstream `main` at `75b04ef` (v1.18.0 plus board-support changes).
+Core code in `src/` and the stock examples are unmodified from upstream, apart
+from a portable replacement for the non-standard `ltoa()` in
+`src/helpers/TxtDataHelpers.cpp` (needed for STM32 builds).
 
 The personal relay reports its version as `<upstream>-er-<commit>`, e.g.
-`v1.17.1-er-1911a2f`: the MeshCore release it is built on, `er` for edge
-relay, and the fork commit it was built from (just `v1.17.1-er` for local
+`v1.18.0-er-1911a2f`: the MeshCore release it is built on, `er` for edge
+relay, and the fork commit it was built from (just `v1.18.0-er` for local
 builds outside `build.sh`). The `ver` CLI command and the app's owner info
 show the full string; the OLED shows the upstream part. `build.sh` names the
-firmware files the same way, e.g. `ProMicro_personal_relay-v1.17.1-er-1911a2f.uf2`,
+firmware files the same way, e.g. `ProMicro_personal_relay-v1.18.0-er-1911a2f.uf2`,
 so a file and the device running it always show the same version. When merging a newer
 upstream release, bump `UPSTREAM_VERSION` in
 `examples/personal_relay/MyMesh.h`.

@@ -10,11 +10,35 @@ WRAPPER_CLASS radio_driver(radio, board);
 
 ESP32RTCClock fallback_clock;
 AutoDiscoverRTCClock rtc_clock(fallback_clock);
-EnvironmentSensorManager sensors;
+#if ENV_INCLUDE_GPS
+  #include <helpers/sensors/MicroNMEALocationProvider.h>
+  #if defined(GPS_PIN_A) && defined(GPS_PIN_B)
+    // set by LilyGoTLoraBoard::begin() (see TLoraGpsPins.h)
+    int8_t tlora_gps_tx_pin = GPS_PIN_A;
+    int8_t tlora_gps_rx_pin = GPS_PIN_B;
+  #endif
+  MicroNMEALocationProvider nmea = MicroNMEALocationProvider(Serial1, &rtc_clock);
+  EnvironmentSensorManager sensors = EnvironmentSensorManager(nmea);
+  // Upstream (v1.18) declares LocationProvider::sendSentence() virtual but never
+  // defines it, so its vtable is never emitted. Other boards get away with it;
+  // with this board's -Os the base constructor keeps a vtable reference and the
+  // link fails. Define it here (as a no-op, like the default it should have).
+  // Remove if upstream adds a body (this then fails as a redefinition).
+  void LocationProvider::sendSentence(const char* sentence) { }
+#else
+  EnvironmentSensorManager sensors;
+#endif
 
 #ifdef DISPLAY_CLASS
   DISPLAY_CLASS display;
-  MomentaryButton user_btn(PIN_USER_BTN, 1000, true);
+  #if defined(PIN_USER_BTN_DEBOUNCE_MS)
+    // external switch: active low, internal pull-up, debounced
+    DebouncedButton user_btn(PIN_USER_BTN, 1000, true, true, PIN_USER_BTN_DEBOUNCE_MS);
+  #elif defined(PIN_USER_BTN_PULLUP)
+    MomentaryButton user_btn(PIN_USER_BTN, 1000, true, true);   // active low, internal pull-up
+  #else
+    MomentaryButton user_btn(PIN_USER_BTN, 1000, true);
+  #endif
 #endif
 
 bool radio_init() {
