@@ -10,6 +10,9 @@
 #ifdef DISPLAY_CLASS
   #include <helpers/ui/SSD1306Display.h>
   #include <helpers/ui/MomentaryButton.h>
+  #ifdef PIN_USER_BTN_DEBOUNCE_MS
+    #include "DebouncedButton.h"
+  #endif
 #endif
 
 extern LilyGoTLoraBoard board;
@@ -19,7 +22,11 @@ extern EnvironmentSensorManager sensors;
 
 #ifdef DISPLAY_CLASS
   extern DISPLAY_CLASS display;
-  extern MomentaryButton user_btn;
+  #ifdef PIN_USER_BTN_DEBOUNCE_MS
+    extern DebouncedButton user_btn;
+  #else
+    extern MomentaryButton user_btn;
+  #endif
 #endif
 
 bool radio_init();

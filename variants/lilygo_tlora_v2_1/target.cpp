@@ -31,7 +31,10 @@ AutoDiscoverRTCClock rtc_clock(fallback_clock);
 
 #ifdef DISPLAY_CLASS
   DISPLAY_CLASS display;
-  #ifdef PIN_USER_BTN_PULLUP
+  #if defined(PIN_USER_BTN_DEBOUNCE_MS)
+    // external switch: active low, internal pull-up, debounced
+    DebouncedButton user_btn(PIN_USER_BTN, 1000, true, true, PIN_USER_BTN_DEBOUNCE_MS);
+  #elif defined(PIN_USER_BTN_PULLUP)
     MomentaryButton user_btn(PIN_USER_BTN, 1000, true, true);   // active low, internal pull-up
   #else
     MomentaryButton user_btn(PIN_USER_BTN, 1000, true);
