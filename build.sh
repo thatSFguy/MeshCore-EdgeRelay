@@ -148,7 +148,7 @@ build_firmware() {
 
   # personal relay: version by the MeshCore release it is based on, matching
   # what the firmware reports (EDGE_RELAY_VERSION)
-  # e.g: v1.17.1-er-abcdef
+  # e.g: v1.18.0-er-abcdef
   if [[ "$1" == *_personal_relay ]]; then
     UPSTREAM_VERSION=$(sed -n 's/^#define UPSTREAM_VERSION *"\(.*\)".*/\1/p' examples/personal_relay/MyMesh.h)
     if [ -z "$UPSTREAM_VERSION" ]; then

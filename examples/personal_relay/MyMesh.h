@@ -61,10 +61,6 @@ struct RepeaterStats {
   uint32_t n_recv_errors;
 };
 
-#ifndef MAX_CLIENTS
-  #define MAX_CLIENTS           32
-#endif
-
 struct NeighbourInfo {
   mesh::Identity id;
   uint32_t advert_timestamp;
@@ -73,18 +69,18 @@ struct NeighbourInfo {
 };
 
 #ifndef FIRMWARE_BUILD_DATE
-  #define FIRMWARE_BUILD_DATE   "14 Aug 2026"
+  #define FIRMWARE_BUILD_DATE   "15 Oct 2026"
 #endif
 
 #ifndef FIRMWARE_VERSION
-  #define FIRMWARE_VERSION   "v1.17.1"
+  #define FIRMWARE_VERSION   "v1.18.0"
 #endif
 
 // MeshCore release this fork is based on: src/ is unmodified from this tag.
 // Bump it when merging a newer upstream release.
-#define UPSTREAM_VERSION   "v1.17.1"
+#define UPSTREAM_VERSION   "v1.18.0"
 
-// Reported version, e.g. "v1.17.1-er-1911a2f": upstream base, edge relay, commit.
+// Reported version, e.g. "v1.18.0-er-1911a2f": upstream base, edge relay, commit.
 // CI's FIRMWARE_VERSION is derived from the branch name and says nothing about
 // the MeshCore base, so it is not used here; build.sh supplies FIRMWARE_COMMIT.
 #ifdef FIRMWARE_COMMIT
