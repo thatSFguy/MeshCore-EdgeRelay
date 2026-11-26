@@ -15,9 +15,6 @@
 #ifdef PIN_BUZZER
   #include <helpers/ui/buzzer.h>
 #endif
-#ifdef PIN_VIBRATION
-  #include <helpers/ui/GenericVibration.h>
-#endif
 
 #include "../AbstractUITask.h"
 #include "../NodePrefs.h"
@@ -76,9 +73,10 @@ class UITask : public AbstractUITask {
 #ifdef PIN_BUZZER
   genericBuzzer buzzer;
 #endif
-#ifdef PIN_VIBRATION
-  GenericVibration vibration;
-#endif
+  // vibration: short pulses (the stock GenericVibration runs for 5 s)
+  uint8_t _vib_pulses = 0;        // pulses still to start
+  bool _vib_on = false;
+  unsigned long _vib_next = 0;
   CardKB _kb;
 
   KChat _chats[KISS_MAX_CHATS];
@@ -158,6 +156,8 @@ class UITask : public AbstractUITask {
   void drawPrompt();
   void drawCompose(int y);
   void syncClock(uint32_t their_time);
+  void vibrate(uint8_t pulses);
+  void vibrationLoop();
 
 public:
   UITask(mesh::MainBoard* board, MultiSerialInterface* interfaces) : AbstractUITask(board, interfaces) { }

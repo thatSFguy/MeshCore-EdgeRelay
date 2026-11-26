@@ -17,8 +17,8 @@
 #define C_LIGHT     1
 
 
-static const char* MENU_ITEMS[] = { "Send flood advert", "Send zero-hop advert", "Set name", "Sound", "About" };
-#define MENU_COUNT  5
+static const char* MENU_ITEMS[] = { "Send flood advert", "Send zero-hop advert", "Set name", "Sound", "Vibrate", "About" };
+#define MENU_COUNT  6
 
 // ---------------------------------------------------------------- setup
 
@@ -47,7 +47,8 @@ void UITask::begin(DisplayDriver* display, SensorManager* sensors, NodePrefs* no
   buzzer.startup();
 #endif
 #ifdef PIN_VIBRATION
-  vibration.begin();
+  pinMode(PIN_VIBRATION, OUTPUT);
+  digitalWrite(PIN_VIBRATION, LOW);
 #endif
 
   rebuildChats();
@@ -513,12 +514,37 @@ void UITask::notify(UIEventType t) {
       break;
   }
 #endif
+  if (t == UIEventType::channelMessage) vibrate(1);   // a light tick
+  if (t == UIEventType::contactMessage || t == UIEventType::newContactMessage) vibrate(2);   // DMs, requests
+  if (t != UIEventType::ack && t != UIEventType::none) wake();
+}
+
+#define VIB_ON_MILLIS   120
+#define VIB_GAP_MILLIS  130
+
+void UITask::vibrate(uint8_t pulses) {
 #ifdef PIN_VIBRATION
-  if (t == UIEventType::contactMessage || t == UIEventType::channelMessage || t == UIEventType::newContactMessage) {
-    vibration.trigger();
+  if (_node_prefs->vibe_quiet || _vib_pulses || _vib_on) return;   // off, or already buzzing
+  _vib_pulses = pulses;
+  _vib_next = millis();
+#endif
+}
+
+void UITask::vibrationLoop() {
+#ifdef PIN_VIBRATION
+  if (!_vib_on && _vib_pulses == 0) return;
+  if ((long)(millis() - _vib_next) < 0) return;
+  if (_vib_on) {
+    digitalWrite(PIN_VIBRATION, LOW);
+    _vib_on = false;
+    _vib_next = millis() + VIB_GAP_MILLIS;
+  } else {
+    digitalWrite(PIN_VIBRATION, HIGH);
+    _vib_on = true;
+    _vib_pulses--;
+    _vib_next = millis() + VIB_ON_MILLIS;
   }
 #endif
-  if (t != UIEventType::ack && t != UIEventType::none) wake();
 }
 
 void UITask::wake() {
@@ -670,6 +696,12 @@ void UITask::keyMenu(int key) {
         showAlert(_node_prefs->buzzer_quiet ? "Sound off" : "Sound on", 1200);
         break;
       case 4:
+        _node_prefs->vibe_quiet = !_node_prefs->vibe_quiet;
+        the_mesh.savePrefs();
+        showAlert(_node_prefs->vibe_quiet ? "Vibrate off" : "Vibrate on", 1200);
+        if (!_node_prefs->vibe_quiet) vibrate(1);   // a sample
+        break;
+      case 5:
         _screen = KScreen::ABOUT;
         break;
     }
@@ -860,6 +892,7 @@ void UITask::drawMenu() {
   for (int r = 0; r < MENU_COUNT; r++) {
     char line[32];
     if (r == 3) snprintf(line, sizeof(line), "Sound: %s", _node_prefs->buzzer_quiet ? "off" : "on");
+    else if (r == 4) snprintf(line, sizeof(line), "Vibrate: %s", _node_prefs->vibe_quiet ? "off" : "on");
     else StrHelper::strncpy(line, MENU_ITEMS[r], sizeof(line));
     drawRow(_display, ROW_H + 1 + r * ROW_H, line, r == _menu_sel);
   }
@@ -966,9 +999,7 @@ void UITask::loop() {
 #ifdef PIN_BUZZER
   if (buzzer.isPlaying()) buzzer.loop();
 #endif
-#ifdef PIN_VIBRATION
-  vibration.loop();
-#endif
+  vibrationLoop();
 
   if (_alert_until && (long)(now - _alert_until) >= 0) {
     _alert_until = 0;
