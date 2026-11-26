@@ -28,8 +28,13 @@ bool StrHelper::isBlank(const char* str) {
 }
 
 #include <Arduino.h>
+#include <stdio.h>
+#if __has_include(<api/itoa.h>)
+// https://github.com/stm32duino/Arduino_Core_STM32/issues/3084
+#include <api/itoa.h>
+#endif
 
-union int32_Float_t 
+union int32_Float_t
 {
   int32_t Long;
   float Float;
@@ -101,7 +106,7 @@ static void _ftoa(float f, char *p, int *status)
       *p++ = '-';
   if (int_part == 0)
     *p++ = '0';
-  else 
+  else
   {
     p += sprintf(p, "%ld", (long)int_part);   // ltoa() is non-standard, missing on STM32
   }
