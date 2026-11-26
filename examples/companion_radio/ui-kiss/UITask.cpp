@@ -835,9 +835,12 @@ void UITask::drawChat() {
   snprintf(title, sizeof(title), "%c%s", c.type == KChatType::CHANNEL ? '#' : '@', c.name);
   drawTitle(title, c.type == KChatType::CHANNEL ? "Tab:DM" : NULL);
 
-  // build wrapped lines, newest message last
+  // build wrapped lines, newest message last. Each message starts with its
+  // sender as an inverted label ("me" for ours) so messages don't run together.
   const int MAX_LINES = 40;
+  const int LABEL_MAX = 10;
   static char lines[MAX_LINES][COLS + 1];
+  static uint8_t label_len[MAX_LINES];   // leading chars of the line drawn inverted
   int total = 0;
   int count = 0;
   int order[KISS_MAX_MSGS];
@@ -846,7 +849,7 @@ void UITask::drawChat() {
     if (_msgs[i].id && _msgs[i].chat == _chat) order[count++] = i;
   }
   // only the newest messages that fit
-  char buf[KISS_TEXT_MAX + 16];
+  char buf[KISS_TEXT_MAX + 32];
   char wrapped[12][COLS + 1];
   for (int k = count - 1; k >= 0 && total < MAX_LINES; k--) {
     KMsg& m = _msgs[order[k]];
@@ -858,13 +861,40 @@ void UITask::drawChat() {
     _display->translateUTF8ToBlocks(text, m.text, sizeof(text));
     char* mch = strstr(text, "] mch:");
     if (mch) mch[1] = 0;   // "DM request for @[Bob]" without the key
-    snprintf(buf, sizeof(buf), "%s%s%s", m.status == MSG_IN ? "" : ">", text, mark);
+
+    // sender label + body
+    char label[LABEL_MAX + 1];
+    const char* body = text;
+    if (m.status != MSG_IN) {
+      strcpy(label, "me");
+    } else if (c.type == KChatType::CHANNEL) {
+      const char* sep = strstr(text, ": ");      // "sender: body"
+      int len = sep ? sep - text : 0;
+      if (len > 0) {
+        if (len > LABEL_MAX) len = LABEL_MAX;
+        memcpy(label, text, len);
+        label[len] = 0;
+        body = sep + 2;
+      } else {
+        label[0] = 0;
+      }
+    } else {
+      StrHelper::strncpy(label, c.name, sizeof(label));   // DM: the other person
+    }
+    snprintf(buf, sizeof(buf), "%s%s%s%s", label, label[0] ? " " : "", body, mark);
     int n = wrapText(buf, wrapped, 12);
     // prepend (we walk newest -> oldest)
     int shift = n;
     if (total + shift > MAX_LINES) shift = MAX_LINES - total;
     memmove(lines[shift], lines[0], total * (COLS + 1));
-    for (int j = 0; j < shift; j++) strcpy(lines[j], wrapped[n - shift + j]);
+    memmove(&label_len[shift], &label_len[0], total);
+    for (int j = 0; j < shift; j++) {
+      int src = n - shift + j;
+      strcpy(lines[j], wrapped[src]);
+      int ll = src == 0 ? strlen(label) : 0;     // only the message's first line
+      if (ll > (int)strlen(wrapped[src])) ll = strlen(wrapped[src]);
+      label_len[j] = ll;
+    }
     total += shift;
   }
 
@@ -874,8 +904,25 @@ void UITask::drawChat() {
   int first = total - rows - _scroll;
   if (first < 0) first = 0;
   for (int r = 0; r < rows && first + r < total; r++) {
-    _display->setCursor(0, ROW_H + 1 + r * ROW_H);
-    _display->print(lines[first + r]);
+    int y = ROW_H + 1 + r * ROW_H;
+    const char* line = lines[first + r];
+    int ll = label_len[first + r];
+    if (ll > 0) {
+      char lab[COLS + 1];
+      memcpy(lab, line, ll);
+      lab[ll] = 0;
+      _display->setColor(C_LIGHT);
+      _display->fillRect(0, y, ll * 6 + 1, ROW_H);
+      _display->setColor(C_DARK);
+      _display->setCursor(1, y);
+      _display->print(lab);
+      _display->setColor(C_LIGHT);
+      _display->setCursor(ll * 6 + 1, y);
+      _display->print(line + ll);
+    } else {
+      _display->setCursor(0, y);
+      _display->print(line);
+    }
   }
   drawCompose(_display->height() - ROW_H);
 }
