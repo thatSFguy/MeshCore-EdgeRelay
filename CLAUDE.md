@@ -54,6 +54,12 @@ bridges that one hop. A moving node must not act like a normal repeater, so:
   `LocationProvider::sendSentence()` definition in its `target.cpp` working
   around an upstream link bug, and `GPS_ENABLED_BY_DEFAULT` (opt-in flag, only
   this env) in `examples/companion_radio/MyMesh.cpp`.
+- Also fork-only: the K.I.S.S. Messenger (`LilyGo_TLora_V2_1_1_6_kiss_messenger`):
+  a standalone on-device chat UI in `examples/companion_radio/ui-kiss/` (CardKB
+  keyboard, OLED, buzzer GPIO 15, vibration GPIO 13, no BLE), plus two small
+  public additions to the companion's `MyMesh`: `floodAdvert()` and
+  `persistContacts()`. Simple mode: no auto-added contacts; DMs are set up by an
+  "@[name] DM request" / "@[name] DM accepted" exchange in the group chat.
 - Every board's `<board>_personal_relay` env mirrors its `_repeater` env with
   only the example and `ADVERT_NAME` changed.
 
