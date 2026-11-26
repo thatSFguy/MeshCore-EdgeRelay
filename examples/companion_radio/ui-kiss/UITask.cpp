@@ -1043,6 +1043,12 @@ void UITask::loop() {
 
   checkOutgoing();
 
+  // channels/contacts can change over USB (app or the web config page)
+  if (_screen == KScreen::LIST && (long)(now - _next_rebuild) >= 0) {
+    _next_rebuild = now + 3000;
+    rebuildChats();
+  }
+
 #ifdef PIN_BUZZER
   if (buzzer.isPlaying()) buzzer.loop();
 #endif

@@ -106,7 +106,7 @@ class UITask : public AbstractUITask {
   char _alert[48];
   unsigned long _alert_until = 0;
   bool _dirty = true;
-  unsigned long _next_refresh = 0, _auto_off = 0, _next_kb_poll = 0;
+  unsigned long _next_refresh = 0, _auto_off = 0, _next_kb_poll = 0, _next_rebuild = 0;
 
   // chats + messages
   void rebuildChats();
