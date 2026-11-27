@@ -42,7 +42,7 @@ struct DChat {
   uint8_t pub_key[PUB_KEY_SIZE];  // DIRECT: contact key
   char name[32];
   uint8_t unread;
-  unsigned long last_activity;    // millis() of the last message, 0 = none
+  uint32_t last_activity;         // our clock at the last message, 0 = none (survives a restart with saved messages)
 };
 
 enum DMsgStatus : uint8_t { MSG_IN, MSG_OUT, MSG_OUT_PENDING, MSG_OUT_DELIVERED, MSG_OUT_FAILED };
@@ -83,14 +83,15 @@ struct DClockSample {
 struct DeckPrefs {
   int8_t tz_halfhours = -16;      // UTC offset for message times (UTC-8)
   uint8_t timeout_idx = 1;        // index into the screen timeout options
+  uint8_t keep_msgs = 1;          // save messages to flash and reload them at boot
 };
 
 enum class DScreen : uint8_t { CHATS, SETTINGS, CHAT, ACTIONS, NAME, ABOUT, PROMPT, REGION,
-                               CHANNELS, CHANNEL_INFO, ADD_CHANNEL, CHANNEL_FORM };
-enum class DPrompt : uint8_t { NONE, CONFIRM_REQUEST, INCOMING_REQUEST, REMOVE_CHANNEL };
+                               CHANNELS, CHANNEL_INFO, ADD_CHANNEL, CHANNEL_FORM, SHARE_PICK };
+enum class DPrompt : uint8_t { NONE, CONFIRM_REQUEST, INCOMING_REQUEST, REMOVE_CHANNEL, CLEAR_MESSAGES, KEEP_OFF, JOIN_CHANNEL, SHARE_CHANNEL };
 // the app's add-channel choices
 enum DAddChoice : uint8_t { ADD_PUBLIC, ADD_CREATE_PRIVATE, ADD_JOIN_PRIVATE, ADD_HASHTAG };
-enum DAction : uint8_t { ACT_DM, ACT_ACCEPT, ACT_MENTION, ACT_RESEND, ACT_CANCEL };
+enum DAction : uint8_t { ACT_DM, ACT_ACCEPT, ACT_MENTION, ACT_RESEND, ACT_JOIN, ACT_CANCEL };
 
 // Touch targets, registered while drawing (so they always match the screen).
 enum DHitType : uint8_t { HIT_TAB = 1, HIT_BACK, HIT_SEND, HIT_CHAT_ROW, HIT_MSG, HIT_ACTION,
@@ -149,15 +150,33 @@ class UITask : public AbstractUITask {
   uint8_t _actions[DECK_MAX_ACTIONS];
   int _num_actions = 0, _action_sel = 0;
   char _action_name[32];          // sender of the highlighted message
+  // a channel shared as a meshcore://channel/add link (JOIN_CHANNEL / ACT_JOIN)
+  char _join_name[32];
+  uint8_t _join_secret[16];
+  char _join_from[32];
+  bool offerJoin(const char* text, const char* from, bool ask);
+  // sharing a channel by DM (CHANNEL_INFO -> SHARE_PICK -> SHARE_CHANNEL)
+  int _sp_sel = 0, _sp_top = 0;
+  int _share_chat = -1;           // the DM chat picked
+  int dmChats(int* out);
+  void keySharePick(int key);
+  void drawSharePick();
+  void shareChannel();
   char _compose[DECK_COMPOSE_MAX + 1];
   int _compose_len = 0;
 
   char _alert[96];
   unsigned long _alert_until = 0;
   bool _dirty = true;
+  bool _store_dirty = false;      // messages changed since the last save
+  unsigned long _store_due = 0;
   unsigned long _next_refresh = 0, _auto_off = 0, _next_rebuild = 0;
 
   void loadUiPrefs();
+  void loadMessages();
+  void saveMessages();
+  void messagesChanged();
+  void clearMessages();
   void saveUiPrefs();
   unsigned long timeoutMillis() const;
 

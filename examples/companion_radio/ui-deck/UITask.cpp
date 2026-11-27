@@ -192,6 +192,16 @@ static void drawTextRight(GFXcanvas16* g, const GFXfont* f, int right_x, int y, 
   drawText(g, f, right_x - textWidth(f, s), y, color, s);
 }
 
+// The letter in an avatar circle, as the app's AvatarGlyph: the first letter
+// or digit, upper-cased, skipping emoji and symbols in front of it; "?" when
+// there is none (the app would show an emoji, which this font can't draw).
+static void avatarGlyph(const char* name, char* out) {
+  for (const char* p = name; *p; p++) {
+    if (isalnum((uint8_t)*p)) { out[0] = toupper((uint8_t)*p); out[1] = 0; return; }
+  }
+  strcpy(out, "?");
+}
+
 static void drawTick(GFXcanvas16* g, int x, int y, uint16_t c) {   // 7x6 check mark
   g->drawLine(x, y + 3, x + 2, y + 5, c);
   g->drawLine(x + 2, y + 5, x + 6, y + 0, c);
@@ -224,6 +234,7 @@ void UITask::begin(DisplayDriver* display, SensorManager* sensors, NodePrefs* no
   _sound.begin();
 
   rebuildChats();
+  if (_ui.keep_msgs) loadMessages();
   if (_display) _display->turnOn();
   wake();
 
@@ -237,11 +248,13 @@ void UITask::begin(DisplayDriver* display, SensorManager* sensors, NodePrefs* no
 void UITask::loadUiPrefs() {
   File f = SPIFFS.open("/deck_ui", "r");
   if (!f) return;
-  DeckPrefs p;
-  if (f.read((uint8_t*)&p, sizeof(p)) == sizeof(p)) {
+  DeckPrefs p;   // defaults for fields an older, shorter file doesn't have
+  int n = f.read((uint8_t*)&p, sizeof(p));
+  if (n >= 2) {
     if (p.tz_halfhours >= -24 && p.tz_halfhours <= 28) _ui.tz_halfhours = p.tz_halfhours;
     if (p.timeout_idx < NUM_TIMEOUTS) _ui.timeout_idx = p.timeout_idx;
   }
+  if (n >= 3) _ui.keep_msgs = p.keep_msgs ? 1 : 0;
   f.close();
 }
 
@@ -262,6 +275,122 @@ bool UITask::isDefaultName() const {
   char key_hex[9];
   mesh::Utils::toHex(key_hex, the_mesh.self_id.pub_key, 4);
   return strcasecmp(n, key_hex) == 0;
+}
+
+
+// ---------------------------------------------------------------- saved messages
+//
+// With "Keep messages" on, the message ring is written to /deck_msgs at most
+// every 15 s after a change (a power cut loses at most that much) and read
+// back at boot. Each message is stored against its chat's identity (channel
+// key or contact key), not a list position, so channels and contacts can
+// change in between. Stored as plain text in flash, like the companion's own
+// offline queue.
+
+#define STORE_PATH      "/deck_msgs"
+#define STORE_MAGIC     0x314D4B44UL   // "DKM1"
+#define STORE_DELAY_MS  15000
+
+struct StoredMsgHead {
+  uint8_t type;            // DChatType
+  uint8_t status;
+  uint8_t attempt;
+  uint8_t text_len;
+  uint32_t ts;
+  uint8_t key[PUB_KEY_SIZE];   // channel: its 16-byte secret (zero padded); DM: the contact's key
+};
+
+void UITask::messagesChanged() {
+  if (!_ui.keep_msgs) return;
+  if (!_store_dirty) _store_due = millis() + STORE_DELAY_MS;
+  _store_dirty = true;
+}
+
+void UITask::saveMessages() {
+  _store_dirty = false;
+  if (!_ui.keep_msgs || _msgs == NULL) return;
+  File f = SPIFFS.open(STORE_PATH, "w");
+  if (!f) return;
+  uint32_t magic = STORE_MAGIC;
+  f.write((const uint8_t*)&magic, sizeof(magic));
+  for (int n = DECK_MAX_MSGS; n >= 1; n--) {   // oldest first
+    DMsg& m = _msgs[(_msg_head - n + DECK_MAX_MSGS) % DECK_MAX_MSGS];
+    if (!m.id || m.chat < 0 || m.chat >= _num_chats) continue;
+    DChat& c = _chats[m.chat];
+    StoredMsgHead h;
+    memset(&h, 0, sizeof(h));
+    h.type = (uint8_t)c.type;
+    h.status = m.status;
+    h.attempt = m.attempt;
+    h.ts = m.ts;
+    size_t len = strlen(m.text);
+    h.text_len = len > 255 ? 255 : len;
+    if (c.type == DChatType::CHANNEL) {
+      ChannelDetails cd;
+      if (!the_mesh.getChannel(c.ch_idx, cd)) continue;
+      memcpy(h.key, cd.channel.secret, 16);
+    } else {
+      memcpy(h.key, c.pub_key, PUB_KEY_SIZE);
+    }
+    f.write((const uint8_t*)&h, sizeof(h));
+    f.write((const uint8_t*)m.text, h.text_len);
+  }
+  f.close();
+}
+
+void UITask::loadMessages() {
+  File f = SPIFFS.open(STORE_PATH, "r");
+  if (!f) return;
+  uint32_t magic = 0;
+  if (f.read((uint8_t*)&magic, sizeof(magic)) != sizeof(magic) || magic != STORE_MAGIC) {
+    f.close();
+    return;
+  }
+  StoredMsgHead h;
+  while (f.read((uint8_t*)&h, sizeof(h)) == sizeof(h)) {
+    char text[DECK_TEXT_MAX + 1];
+    int len = h.text_len > DECK_TEXT_MAX ? DECK_TEXT_MAX : h.text_len;
+    if (f.read((uint8_t*)text, h.text_len) != h.text_len) break;
+    text[len] = 0;
+    int chat = -1;
+    if (h.type == (uint8_t)DChatType::CHANNEL) {
+      mesh::GroupChannel probe;
+      memset(&probe, 0, sizeof(probe));
+      memcpy(probe.secret, h.key, 16);
+      int ch = the_mesh.findChannelIdx(probe);
+      if (ch >= 0) chat = findChannelChat(ch);
+    } else {
+      chat = findDirectChat(h.key);
+    }
+    if (chat < 0) continue;   // that channel or contact is gone
+    DMsg* m = &_msgs[_msg_head];
+    _msg_head = (_msg_head + 1) % DECK_MAX_MSGS;
+    m->id = _next_msg_id++;
+    if (_next_msg_id == 0) _next_msg_id = 1;
+    m->chat = chat;
+    // a DM that was still being sent when we stopped didn't get through
+    m->status = h.status == MSG_OUT_PENDING ? MSG_OUT_FAILED : h.status;
+    m->attempt = h.attempt;
+    m->ts = h.ts;
+    StrHelper::strncpy(m->text, text, sizeof(m->text));
+    if (h.ts > _chats[chat].last_activity) _chats[chat].last_activity = h.ts | 1;
+  }
+  f.close();
+  _dirty = true;
+}
+
+void UITask::clearMessages() {
+  memset(_msgs, 0, DECK_MAX_MSGS * sizeof(DMsg));
+  _msg_head = 0;
+  _sel_msg = -1;
+  memset(&_out, 0, sizeof(_out));
+  for (int i = 0; i < _num_chats; i++) {
+    _chats[i].unread = 0;
+    _chats[i].last_activity = 0;
+  }
+  SPIFFS.remove(STORE_PATH);
+  _store_dirty = false;
+  showAlert("All messages cleared", 2000);
 }
 
 // ---------------------------------------------------------------- chats + messages
@@ -338,6 +467,7 @@ DMsg* UITask::addMsg(int chat, uint8_t status, const char* text) {
   m->ts = the_mesh.getRTCClock()->getCurrentTime();
   StrHelper::strncpy(m->text, text, sizeof(m->text));
   _dirty = true;
+  messagesChanged();
   return m;
 }
 
@@ -388,7 +518,7 @@ int UITask::totalUnread() const {
 
 void UITask::markActivity(int chat, bool incoming) {
   if (chat < 0) return;
-  _chats[chat].last_activity = millis() | 1;
+  _chats[chat].last_activity = the_mesh.getRTCClock()->getCurrentTime() | 1;
   bool visible = _screen == DScreen::CHAT && _chat == chat && _display && _display->isOn();
   if (incoming && !visible && _chats[chat].unread < 99) _chats[chat].unread++;
 }
@@ -468,6 +598,7 @@ void UITask::sendDMAttempt() {
   if (rc == MSG_SEND_FAILED) {
     m->status = MSG_OUT_FAILED;
     _out.active = false;
+    messagesChanged();
     return;
   }
   _out.acks[_out.attempt] = ack;
@@ -484,6 +615,7 @@ void UITask::checkOutgoing() {
     if (m) m->status = MSG_OUT_FAILED;
     _out.active = false;
     _dirty = true;
+    messagesChanged();
   }
 }
 
@@ -495,6 +627,7 @@ void UITask::onACKRecv(uint32_t ack_crc) {
       if (m) m->status = MSG_OUT_DELIVERED;
       _out.active = false;
       _dirty = true;
+      messagesChanged();
       notify(UIEventType::ack);
       return;
     }
@@ -571,6 +704,148 @@ static bool readHex(const char* src, uint8_t* dest, int bytes) {
 static void toLowerHex(char* dest, const uint8_t* src, size_t len) {
   mesh::Utils::toHex(dest, src, len);
   for (char* c = dest; *c; c++) *c = tolower(*c);
+}
+
+// ---------------------------------------------------------------- shared channel links
+//
+// The app shares a channel as meshcore://channel/add?name=<name>&secret=<32 hex>
+// (its ShareUri, after the firmware's docs/qr_codes.md), and shows such links
+// in chats as tappable. Sent in a DM, the key reaches only that person, so a
+// received one is offered as "Join <name>?". Decoded as the app does: '+' is a
+// space, %XX escapes, first copy of a parameter wins, "channel_secret" is the
+// app's old name for "secret", a '#' ends the query, and an all-zero key is
+// refused.
+
+static bool linkEndChar(char c) {
+  return c == 0 || c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '<' || c == '>' || c == '"' || c == '\'' || c == ']';
+}
+
+static int hexVal(char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return -1;
+}
+
+// percent-decode src[0..len) (with '+' as space) into out; false on a bad escape
+static bool formDecode(const char* src, int len, char* out, int out_size) {
+  int n = 0;
+  for (int i = 0; i < len; i++) {
+    char c = src[i];
+    if (c == '%') {
+      if (i + 2 >= len) return false;   // truncated escape
+      int hi = hexVal(src[i + 1]), lo = hexVal(src[i + 2]);
+      if (hi < 0 || lo < 0) return false;
+      c = (char)((hi << 4) | lo);
+      i += 2;
+    } else if (c == '+') {
+      c = ' ';
+    }
+    if (n + 1 < out_size) out[n++] = c;
+  }
+  out[n] = 0;
+  return true;
+}
+
+// Finds a channel link in text. On success fills name (as the app cleans it:
+// control characters dropped, trimmed, at most 31 bytes) and secret, and the
+// link's span in text.
+static bool parseChannelLink(const char* text, char* name, int name_size, uint8_t* secret,
+                             const char** link_start, const char** link_end) {
+  static const char SCHEME[] = "meshcore://";
+  static const char PATH[] = "channel/add";
+  for (const char* p = text; *p; p++) {
+    if (strncasecmp(p, SCHEME, sizeof(SCHEME) - 1) != 0) continue;
+    const char* end = p;
+    while (!linkEndChar(*end)) end++;
+    const char* q = p + sizeof(SCHEME) - 1;
+    if (end - q < (int)sizeof(PATH) - 1 || strncasecmp(q, PATH, sizeof(PATH) - 1) != 0) continue;
+    q += sizeof(PATH) - 1;
+    if (q >= end || *q != '?') continue;
+    q++;
+    const char* qend = q;
+    while (qend < end && *qend != '#') qend++;
+
+    bool have_name = false, have_secret = false, have_legacy = false;
+    char raw_name[96] = "", hex[40] = "", legacy[40] = "";
+    bool ok = true;
+    while (q < qend && ok) {
+      const char* amp = q;
+      while (amp < qend && *amp != '&') amp++;
+      const char* eq = q;
+      while (eq < amp && *eq != '=') eq++;
+      int klen = eq - q;
+      const char* v = eq < amp ? eq + 1 : amp;
+      int vlen = amp - v;
+      if (klen == 4 && strncasecmp(q, "name", 4) == 0 && !have_name) {
+        ok = formDecode(v, vlen, raw_name, sizeof(raw_name)); have_name = true;
+      } else if (klen == 6 && strncasecmp(q, "secret", 6) == 0 && !have_secret) {
+        ok = formDecode(v, vlen, hex, sizeof(hex)); have_secret = true;
+      } else if (klen == 14 && strncasecmp(q, "channel_secret", 14) == 0 && !have_legacy) {
+        ok = formDecode(v, vlen, legacy, sizeof(legacy)); have_legacy = true;
+      }
+      q = amp < qend ? amp + 1 : qend;
+    }
+    if (!ok) continue;
+    const char* key = have_secret ? hex : have_legacy ? legacy : NULL;
+    if (key == NULL) continue;
+    while (*key == ' ') key++;
+    int klen = strlen(key);
+    while (klen > 0 && key[klen - 1] == ' ') klen--;
+    if (klen != 32 || !readHex(key, secret, 16)) continue;
+    bool zero = true;
+    for (int i = 0; i < 16; i++) if (secret[i]) zero = false;
+    if (zero) continue;
+
+    // clean the name: drop control characters, trim, cut to 31 bytes on a UTF-8 boundary
+    char clean[96];
+    int n = 0;
+    for (const char* c = raw_name; *c; c++) {
+      if ((uint8_t)*c >= 0x20 && *c != 0x7F && n + 1 < (int)sizeof(clean)) clean[n++] = *c;
+    }
+    clean[n] = 0;
+    char* c0 = clean;
+    while (*c0 == ' ') c0++;
+    n = strlen(c0);
+    while (n > 0 && c0[n - 1] == ' ') n--;
+    int max = name_size - 1 < 31 ? name_size - 1 : 31;
+    if (n > max) {
+      n = max;
+      while (n > 0 && ((uint8_t)c0[n] & 0xC0) == 0x80) n--;   // don't split a character
+    }
+    if (n == 0) continue;   // a channel needs a name
+    memcpy(name, c0, n);
+    name[n] = 0;
+    if (link_start) *link_start = p;
+    if (link_end) *link_end = end;
+    return true;
+  }
+  return false;
+}
+
+// The channel slot already holding this key, or -1.
+static int heldChannel(const uint8_t* secret) {
+  mesh::GroupChannel probe;
+  memset(&probe, 0, sizeof(probe));
+  memcpy(probe.secret, secret, 16);
+  int idx = the_mesh.findChannelIdx(probe);
+  ChannelDetails cd;
+  if (idx >= 0 && the_mesh.getChannel(idx, cd) && cd.name[0]) return idx;
+  return -1;
+}
+
+// If text carries a channel link we don't hold yet, remember it for
+// JOIN_CHANNEL / ACT_JOIN; with ask, also put up "Join <name>?" now.
+bool UITask::offerJoin(const char* text, const char* from, bool ask) {
+  char name[32];
+  uint8_t secret[16];
+  if (!parseChannelLink(text, name, sizeof(name), secret, NULL, NULL)) return false;
+  if (heldChannel(secret) >= 0) return false;
+  StrHelper::strncpy(_join_name, name, sizeof(_join_name));
+  memcpy(_join_secret, secret, 16);
+  StrHelper::strncpy(_join_from, from, sizeof(_join_from));
+  if (ask) showPrompt(DPrompt::JOIN_CHANNEL, name, 0);
+  return true;
 }
 
 bool UITask::addContactFromKey(const char* name, const uint8_t* pub_key) {
@@ -798,6 +1073,19 @@ void UITask::onMessageRecv(mesh::Packet *pkt, const ContactInfo &from, uint8_t t
   }
   addMsg(chat, MSG_IN, text);
   markActivity(chat, true);
+  // a channel shared with us: ask now, unless another question is up or
+  // they're typing (Enter would answer it)
+  bool typing = _compose_len > 0 || _screen == DScreen::NAME || _screen == DScreen::CHANNEL_FORM;
+  bool ask = _prompt == DPrompt::NONE && !typing;
+  if (offerJoin(text, from.name, ask)) {
+    if (!ask) {
+      char msg[64];
+      snprintf(msg, sizeof(msg), "%s shared a channel - tap the message to join", from.name);
+      showAlert(msg, 3500);
+    }
+    notify(UIEventType::contactMessage);
+    return;
+  }
   char msg[48];
   snprintf(msg, sizeof(msg), "Message from %s", from.name);
   if (!(_screen == DScreen::CHAT && _chat == chat)) showAlert(msg, 2500);
@@ -981,6 +1269,8 @@ static const SetRow SET_ROWS[] = {
   { 'f', "Send advert (flood)" },
   { 'H', "Messaging" },
   { 'c', "Channels" },
+  { 'k', "Keep messages" },
+  { 'x', "Clear all messages" },
   { 'H', "Appearance and alerts" },
   { 's', "Sound" },
   { 't', "Time zone" },
@@ -1008,6 +1298,19 @@ void UITask::activateSetting(int item) {
       break;
     case 'c':
       openChannels();
+      break;
+    case 'k':
+      if (_ui.keep_msgs) {
+        showPrompt(DPrompt::KEEP_OFF, "", 0);   // turning it off clears everything: ask first
+      } else {
+        _ui.keep_msgs = 1;
+        saveUiPrefs();
+        saveMessages();
+        showAlert("Messages are saved on this device", 2500);
+      }
+      break;
+    case 'x':
+      showPrompt(DPrompt::CLEAR_MESSAGES, "", 0);
       break;
     case 's':
       _node_prefs->buzzer_quiet = !_node_prefs->buzzer_quiet;
@@ -1083,6 +1386,11 @@ void UITask::openActions() {
     }
   }
   if (m.status == MSG_OUT_FAILED && c.type == DChatType::DIRECT) _actions[_num_actions++] = ACT_RESEND;
+  if (m.status == MSG_IN) {
+    const char* from = c.name;
+    if (c.type == DChatType::CHANNEL && _action_name[0]) from = _action_name;
+    if (offerJoin(m.text, from, false)) _actions[_num_actions++] = ACT_JOIN;
+  }
   if (_num_actions == 0) return;   // nothing to do with this one
   _actions[_num_actions++] = ACT_CANCEL;
   _action_sel = 0;
@@ -1099,6 +1407,9 @@ void UITask::runAction(uint8_t act) {
     case ACT_ACCEPT:
       showPrompt(DPrompt::INCOMING_REQUEST, _action_name, c.ch_idx);
       break;
+    case ACT_JOIN:
+      showPrompt(DPrompt::JOIN_CHANNEL, _join_name, 0);
+      break;
     case ACT_MENTION: {
       char tag[40];
       snprintf(tag, sizeof(tag), "@[%s] ", _action_name);
@@ -1114,6 +1425,7 @@ void UITask::runAction(uint8_t act) {
         char text[DECK_TEXT_MAX + 1];
         StrHelper::strncpy(text, m.text, sizeof(text));
         m.id = 0;   // replaced by the new copy
+        messagesChanged();
         _sel_msg = -1;
         startDM(*ci, text);
         markActivity(_chat, false);
@@ -1205,6 +1517,18 @@ void UITask::keyPrompt(int key) {
   if (yes && p == DPrompt::CONFIRM_REQUEST) requestDM(_prompt_name, _prompt_ch_idx);
   if (yes && p == DPrompt::INCOMING_REQUEST) acceptDM();   // decline posts nothing, as the app
   if (yes && p == DPrompt::REMOVE_CHANNEL) removeChannel(_ch_slot);
+  if (yes && p == DPrompt::CLEAR_MESSAGES) clearMessages();
+  if (yes && p == DPrompt::JOIN_CHANNEL && joinChannel(_join_name, _join_secret) >= 0) {
+    char msg[64];
+    snprintf(msg, sizeof(msg), "Joined %s", _join_name);
+    showAlert(msg, 2500);
+  }
+  if (yes && p == DPrompt::SHARE_CHANNEL) shareChannel();
+  if (yes && p == DPrompt::KEEP_OFF) {
+    _ui.keep_msgs = 0;
+    saveUiPrefs();
+    clearMessages();
+  }
 }
 
 void UITask::handleKey(int key) {
@@ -1224,6 +1548,7 @@ void UITask::handleKey(int key) {
     case DScreen::CHANNEL_INFO: keyChannelInfo(key); break;
     case DScreen::ADD_CHANNEL:  keyAddChannel(key); break;
     case DScreen::CHANNEL_FORM: keyChannelForm(key); break;
+    case DScreen::SHARE_PICK:   keySharePick(key); break;
   }
   _dirty = true;
 }
@@ -1323,6 +1648,7 @@ void UITask::tapAt(int x, int y) {
       _cl_sel = hit->index;
       if (_screen == DScreen::CHANNELS) keyChannels(KEY_CLICK);
       else if (_screen == DScreen::ADD_CHANNEL) keyAddChannel(KEY_CLICK);
+      else if (_screen == DScreen::SHARE_PICK) { _sp_sel = hit->index; keySharePick(KEY_CLICK); }
       break;
     case HIT_FIELD:
       _form_field = hit->index;
@@ -1357,8 +1683,8 @@ void UITask::dragBy(int dy) {
   _touch_scrolled = true;
   if (_screen == DScreen::SETTINGS) _set_top -= dy;
   else if (_screen == DScreen::REGION) _region_top -= dy;
-  else if (_screen == DScreen::CHATS || _screen == DScreen::CHANNELS) {
-    int& top = _screen == DScreen::CHATS ? _list_top : _cl_top;
+  else if (_screen == DScreen::CHATS || _screen == DScreen::CHANNELS || _screen == DScreen::SHARE_PICK) {
+    int& top = _screen == DScreen::CHATS ? _list_top : _screen == DScreen::SHARE_PICK ? _sp_top : _cl_top;
     _drag_acc += dy;
     while (_drag_acc <= -ROW_H / 2 || _drag_acc >= ROW_H / 2) {
       bool down = _drag_acc > 0;
@@ -1715,6 +2041,96 @@ void UITask::submitForm() {
   }
 }
 
+// ---------------------------------------------------------------- sharing a channel by DM
+//
+// Sends the channel as the app's share link (ShareUri.encodeChannel: name
+// percent-encoded, key as upper-case hex) in a DM, end-to-end encrypted to
+// that one contact. The app shows it as a tappable link; another T-Deck
+// offers to join it.
+
+int UITask::dmChats(int* out) {
+  int n = 0;
+  for (int i = 0; i < _num_chats; i++) if (_chats[i].type == DChatType::DIRECT) out[n++] = i;
+  return n;
+}
+
+void UITask::keySharePick(int key) {
+  int dms[DECK_MAX_CHATS];
+  int n = dmChats(dms);
+  if (key == KEY_UP) {
+    if (_sp_sel > 0) _sp_sel--;
+  } else if (key == KEY_DOWN) {
+    if (_sp_sel + 1 < n) _sp_sel++;
+  } else if ((key == KEY_CLICK || key == KEY_ENTER) && _sp_sel < n) {
+    _share_chat = dms[_sp_sel];
+    showPrompt(DPrompt::SHARE_CHANNEL, _chats[_share_chat].name, _ch_slot);
+  } else if (key == KEY_LEFT || key == KEY_BACKSPACE) {
+    _screen = DScreen::CHANNEL_INFO;
+  }
+}
+
+void UITask::shareChannel() {
+  ChannelDetails cd;
+  if (_share_chat < 0 || _share_chat >= _num_chats || !the_mesh.getChannel(_ch_slot, cd) || cd.name[0] == 0) return;
+  ContactInfo* ci = the_mesh.lookupContactByPubKey(_chats[_share_chat].pub_key, PUB_KEY_SIZE);
+  if (ci == NULL) { showAlert("That contact is gone", 2000); return; }
+  if (_out.active) { showAlert("Still sending the last message - try again in a moment", 2500); return; }
+  static const char HEXU[] = "0123456789ABCDEF";
+  char link[DECK_TEXT_MAX + 1];
+  int n = snprintf(link, sizeof(link), "meshcore://channel/add?name=");
+  for (const uint8_t* p = (const uint8_t*)cd.name; *p && n + 4 < (int)sizeof(link); p++) {
+    if (isalnum(*p) || *p == '-' || *p == '_' || *p == '.' || *p == '~') link[n++] = *p;
+    else { link[n++] = '%'; link[n++] = HEXU[*p >> 4]; link[n++] = HEXU[*p & 15]; }
+  }
+  link[n] = 0;
+  char hex[33];
+  for (int i = 0; i < 16; i++) { hex[i * 2] = HEXU[cd.channel.secret[i] >> 4]; hex[i * 2 + 1] = HEXU[cd.channel.secret[i] & 15]; }
+  hex[32] = 0;
+  int total = n + 8 + 32;
+  if (total > DECK_COMPOSE_MAX) { showAlert("That channel's name is too long to share in a message", 3000); return; }
+  snprintf(link + n, sizeof(link) - n, "&secret=%s", hex);
+  int chat = _share_chat;
+  openChat(chat);
+  startDM(*ci, link);
+  markActivity(chat, false);
+}
+
+void UITask::drawSharePick() {
+  int dms[DECK_MAX_CHATS];
+  int n = dmChats(dms);
+  const int top = BAR_H, rows = (DECK_H - BAR_H) / ROW_H;
+  if (_sp_sel >= n) _sp_sel = n > 0 ? n - 1 : 0;
+  if (_touch_scrolled) {
+    if (_sp_top > n - rows) _sp_top = n - rows;
+    if (_sp_top < 0) _sp_top = 0;
+    if (_sp_sel < _sp_top) _sp_sel = _sp_top;
+    if (_sp_sel >= _sp_top + rows) _sp_sel = _sp_top + rows - 1;
+  } else {
+    if (_sp_sel < _sp_top) _sp_top = _sp_sel;
+    if (_sp_sel >= _sp_top + rows) _sp_top = _sp_sel - rows + 1;
+  }
+  if (n == 0) {
+    char lines[4][64];
+    int k = wrapText(FONT, "No one to send it to yet. Set up a direct chat first: tap someone's message in a channel and choose \"Message privately\".", DECK_W - 40, lines, 4);
+    for (int i = 0; i < k; i++) drawText(G, FONT, 20, top + 30 + i * LINE_H, C_MUTED, lines[i]);
+  }
+  for (int r = 0; r < rows && _sp_top + r < n; r++) {
+    int row = _sp_top + r, y = top + r * ROW_H;
+    addHit(0, y, DECK_W, ROW_H, HIT_LIST_ROW, row);
+    if (row == _sp_sel) {
+      G->fillRect(0, y, DECK_W, ROW_H, C_IN_BUBBLE);
+      G->fillRect(0, y + 4, 3, ROW_H - 8, C_PRIMARY);
+    }
+    drawChatAvatar(dms[row], 22, y + ROW_H / 2, 14);
+    char nm[32], buf[48];
+    toAscii(nm, _chats[dms[row]].name, sizeof(nm));
+    ellipsize(FONT, nm, DECK_W - 54, buf, sizeof(buf));
+    drawText(G, FONT, 44, y + 1, C_TEXT, buf);
+    drawText(G, FONT_SMALL, 44, y + 22, C_MUTED, "Direct message");
+  }
+  drawAppBar("Share with", "Sent as a direct message", true, -1);
+}
+
 void UITask::removeChannel(int slot) {
   ChannelDetails cd;
   char name[32] = "";
@@ -1732,8 +2148,8 @@ void UITask::removeChannel(int slot) {
 }
 
 void UITask::keyChannelInfo(int key) {
-  if (key == KEY_UP || key == KEY_DOWN) {
-    _info_sel = _info_sel ? 0 : 1;
+  if (key == KEY_UP || key == KEY_DOWN || key == KEY_RIGHT) {
+    _info_sel = key == KEY_UP ? (_info_sel + 2) % 3 : (_info_sel + 1) % 3;
   } else if (key == KEY_CLICK || key == KEY_ENTER) {
     ChannelDetails cd;
     if (!the_mesh.getChannel(_ch_slot, cd) || cd.name[0] == 0) { openChannels(); return; }
@@ -1741,6 +2157,9 @@ void UITask::keyChannelInfo(int key) {
       int chat = findChannelChat(_ch_slot);
       if (chat < 0) { rebuildChats(); chat = findChannelChat(_ch_slot); }
       if (chat >= 0) openChat(chat);
+    } else if (_info_sel == 1) {
+      _sp_sel = _sp_top = 0;
+      _screen = DScreen::SHARE_PICK;
     } else {
       showPrompt(DPrompt::REMOVE_CHANNEL, cd.name, _ch_slot);
     }
@@ -1875,9 +2294,10 @@ void UITask::drawChannelInfo() {
   int n = wrapText(FONT_SMALL, CHANNEL_CAVEAT, DECK_W - 28, lines, 3);
   for (int i = 0; i < n; i++) drawText(G, FONT_SMALL, 14, y + i * 11, C_MUTED, lines[i]);
   int by = DECK_H - 40;
-  drawButton(14, by, "Open chat", true, _info_sel == 0, 0);
-  int rw = textWidth(FONT_BOLD, "Remove channel") + 32;
-  drawButton(DECK_W - 14 - rw, by, "Remove channel", false, _info_sel == 1, 1, true);
+  drawButton(14, by, "Open", true, _info_sel == 0, 0);
+  drawButton(14 + textWidth(FONT_BOLD, "Open") + 32 + 10, by, "Share", false, _info_sel == 1, 1);
+  int rw = textWidth(FONT_BOLD, "Remove") + 32;
+  drawButton(DECK_W - 14 - rw, by, "Remove", false, _info_sel == 2, 2, true);
   drawAppBar(cd.name, kindLabel(kind), true, -1);
 }
 
@@ -1919,10 +2339,9 @@ void UITask::drawChatAvatar(int chat, int cx, int cy, int r) {
     G->drawRoundRect(cx - 4, cy - 8, 8, 9, 3, fg);
     G->fillRoundRect(cx - 6, cy - 2, 12, 9, 2, fg);
   } else {
-    char init[2] = { c.type == DChatType::CHANNEL ? '#' : (char)toupper(c.name[0]), 0 };
-    char a[4];
-    toAscii(a, init, sizeof(a));
-    if (a[0] == 0) strcpy(a, "?");
+    char a[2];
+    if (c.type == DChatType::CHANNEL) strcpy(a, "#");
+    else avatarGlyph(c.name, a);
     drawText(G, FONT_BOLD, cx - textWidth(FONT_BOLD, a) / 2, cy - 7, fg, a);
   }
 }
@@ -2031,6 +2450,17 @@ void UITask::describeMessage(const DMsg& m, bool channel, char* sender, char* bo
       return;
     }
   }
+  // a shared channel link: show what it is, not its key
+  char cname[32];
+  uint8_t secret[16];
+  const char *ls, *le;
+  if (parseChannelLink(b, cname, sizeof(cname), secret, &ls, &le)) {
+    char nm[32];
+    toAscii(nm, cname, sizeof(nm));
+    snprintf(body, body_size, "%.*s[Channel: %s]%s", (int)(ls - b), b, nm, le);
+    if (!own) strcpy(extra, heldChannel(secret) >= 0 ? "You're in this channel" : "Tap to join");
+    return;
+  }
   StrHelper::strncpy(body, b, body_size);
 }
 
@@ -2088,8 +2518,9 @@ void UITask::drawMessage(const DMsg& m, bool channel, int y_bottom, bool selecte
     snprintf(seed, sizeof(seed), "sender|%s", sender);
     uint32_t rgb = avatarRgb(seed);
     G->fillCircle(15, y_bottom - 10, 10, rgb565(rgb));
-    char init[2] = { (char)toupper(sender[0]), 0 };
-    drawText(G, FONT_SMALL, 13, y_bottom - 13, isLight(rgb) ? 0x0000 : 0xFFFF, init);
+    char init[2];
+    avatarGlyph(sender, init);
+    drawText(G, FONT_SMALL, 15 - textWidth(FONT_SMALL, init) / 2, y_bottom - 13, isLight(rgb) ? 0x0000 : 0xFFFF, init);
   }
 
   int ty = y + PAD_Y;
@@ -2283,7 +2714,7 @@ void UITask::drawChat() {
 void UITask::drawActions() {
   drawChat();   // the app's popup, over the dimmed thread
   for (int y = 0; y < DECK_H; y += 2) G->drawFastHLine(0, y, DECK_W, C_BG);   // dim
-  static const char* LABELS[] = { "Message privately", "Accept DM request", "Mention", "Resend", "Cancel" };
+  static const char* LABELS[] = { "Message privately", "Accept DM request", "Mention", "Resend", "Join channel", "Cancel" };
   int h = 12 + _num_actions * 30;
   int w = 220, x = (DECK_W - w) / 2, y = (DECK_H - h) / 2;
   G->fillRoundRect(x, y, w, h, 14, C_SURFACE);
@@ -2295,6 +2726,7 @@ void UITask::drawActions() {
     if (sel) G->fillRoundRect(x + 6, ry, w - 12, 28, 8, C_SEC_CONT);
     char label[48];
     if (_actions[i] == ACT_DM) snprintf(label, sizeof(label), "Message %s privately", _action_name);
+    else if (_actions[i] == ACT_JOIN) snprintf(label, sizeof(label), "Join %s", _join_name);
     else StrHelper::strncpy(label, LABELS[_actions[i]], sizeof(label));
     char buf[48];
     ellipsize(FONT, label, w - 32, buf, sizeof(buf));
@@ -2361,6 +2793,13 @@ void UITask::drawSettings() {
         break;
       }
       case 's': strcpy(sub, _node_prefs->buzzer_quiet ? "Off" : "On, for new messages"); break;
+      case 'k': strcpy(sub, _ui.keep_msgs ? "On - saved here, kept after a restart" : "Off - in memory only, gone after a restart"); break;
+      case 'x': {
+        int n = 0;
+        for (int k = 0; k < DECK_MAX_MSGS; k++) if (_msgs[k].id) n++;
+        snprintf(sub, sizeof(sub), "%d message%s on this device", n, n == 1 ? "" : "s");
+        break;
+      }
       case 't': {
         int hh = abs(_ui.tz_halfhours) / 2;
         snprintf(sub, sizeof(sub), "UTC%c%d%s  -  for message times", _ui.tz_halfhours < 0 ? '-' : '+', hh, (abs(_ui.tz_halfhours) % 2) ? ":30" : "");
@@ -2439,13 +2878,41 @@ void UITask::drawPrompt() {
   if (behind == DScreen::CHAT) drawChat();
   else if (behind == DScreen::SETTINGS) drawSettings();
   else if (behind == DScreen::CHANNEL_INFO) drawChannelInfo();
+  else if (behind == DScreen::SHARE_PICK) drawSharePick();
   else drawChats();
   _screen = DScreen::PROMPT;
   for (int y = 0; y < DECK_H; y += 2) G->drawFastHLine(0, y, DECK_W, C_BG);
 
   char title[96], body[200];
   const char *no_label, *yes_label;
-  if (_prompt == DPrompt::REMOVE_CHANNEL) {
+  if (_prompt == DPrompt::SHARE_CHANNEL) {
+    ChannelDetails cd;
+    char ch[32] = "this channel", who[32];
+    if (the_mesh.getChannel(_ch_slot, cd)) toAscii(ch, cd.name, sizeof(ch));
+    toAscii(who, _prompt_name, sizeof(who));
+    snprintf(title, sizeof(title), "Share %s with %s?", ch, who);
+    snprintf(body, sizeof(body), "This sends them the channel's key in a direct message. They'll be able to read everything on it, and can pass it on.");
+    no_label = "Cancel";
+    yes_label = "Share";
+  } else if (_prompt == DPrompt::JOIN_CHANNEL) {
+    char nm[32], from[32];
+    toAscii(nm, _join_name, sizeof(nm));
+    toAscii(from, _join_from, sizeof(from));
+    snprintf(title, sizeof(title), "Join %s?", nm);
+    snprintf(body, sizeof(body), "%s shared this channel with you. Anyone who has its key can read everything on it.", from);
+    no_label = "Not now";
+    yes_label = "Join";
+  } else if (_prompt == DPrompt::KEEP_OFF) {
+    strcpy(title, "Stop keeping messages?");
+    strcpy(body, "All messages are cleared now, and new ones are gone after a restart. Channels and contacts stay.");
+    no_label = "Cancel";
+    yes_label = "Turn off";
+  } else if (_prompt == DPrompt::CLEAR_MESSAGES) {
+    strcpy(title, "Clear all messages?");
+    strcpy(body, "Every chat's messages are deleted from this device. Channels and contacts stay.");
+    no_label = "Cancel";
+    yes_label = "Clear";
+  } else if (_prompt == DPrompt::REMOVE_CHANNEL) {
     snprintf(title, sizeof(title), "Remove %s?", _prompt_name);
     strcpy(body, "You'll stop getting its messages here. You can join again later with the same key.");
     no_label = "Cancel";
@@ -2521,6 +2988,7 @@ void UITask::render() {
     case DScreen::CHANNEL_INFO: drawChannelInfo(); break;
     case DScreen::ADD_CHANNEL:  drawAddChannel(); break;
     case DScreen::CHANNEL_FORM: drawChannelForm(); break;
+    case DScreen::SHARE_PICK:   drawSharePick(); break;
   }
   drawToast();
   _display->push();
@@ -2555,6 +3023,8 @@ void UITask::loop() {
   }
 
   _sound.loop();
+
+  if (_store_dirty && (long)(now - _store_due) >= 0) saveMessages();
 
   if (_alert_until && (long)(now - _alert_until) >= 0) {
     _alert_until = 0;

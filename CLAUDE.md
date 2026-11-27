@@ -67,8 +67,9 @@ bridges that one hop. A moving node must not act like a normal repeater, so:
   (`LilyGo_TDeck_kiss_messenger` in `variants/lilygo_tdeck`): the same behaviour
   in `examples/companion_radio/ui-deck/` with a colour UI modelled on the phone
   app (its dark theme, avatar colours, wording, regional presets and channel
-  setup rules), keyboard, trackball, GT911 touch and I2S tones. Its DM handshake
-  and clock sync are copies of ui-kiss: change both together. The env sets
+  setup rules), keyboard, trackball, GT911 touch and I2S tones. Its DM handshake,
+  clock sync, duplicate filter and saved messages ("Keep messages", default on;
+  turning it off clears all messages) are copies of ui-kiss: change both together. The env sets
   `PIN_BOARD_SDA=18`/`PIN_BOARD_SCL=8`; without them `ESP32Board::begin()` starts
   Wire on the S3 default pins and the keyboard never answers (an upstream T-Deck
   bug). The I2S clock must stay stopped between tones: running, it couples into

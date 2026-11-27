@@ -72,7 +72,7 @@ struct KClockSample {
 #define KISS_CLOCK_SAMPLES  8
 
 enum class KScreen : uint8_t { LIST, CHAT, PICK, MENU, NAME, ABOUT, PROMPT };
-enum class KPrompt : uint8_t { NONE, CONFIRM_REQUEST, INCOMING_REQUEST };
+enum class KPrompt : uint8_t { NONE, CONFIRM_REQUEST, INCOMING_REQUEST, KEEP_OFF };
 
 class UITask : public AbstractUITask {
   DisplayDriver* _display = NULL;
@@ -116,6 +116,17 @@ class UITask : public AbstractUITask {
   unsigned long _alert_until = 0;
   bool _dirty = true;
   unsigned long _next_refresh = 0, _auto_off = 0, _next_kb_poll = 0, _next_rebuild = 0;
+
+  // saved messages ("Keep msgs" in the menu)
+  bool _keep_msgs = true;
+  bool _store_dirty = false;      // messages changed since the last save
+  unsigned long _store_due = 0;
+  void loadKeepPref();
+  void saveKeepPref();
+  void loadMessages();
+  void saveMessages();
+  void messagesChanged();
+  void clearMessages();
 
   // chats + messages
   void rebuildChats();
