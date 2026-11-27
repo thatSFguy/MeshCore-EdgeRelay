@@ -1,5 +1,10 @@
 # MeshCore EdgeRelay
 
+> **This repository has moved to [thatSFguy/meshcore-extras](https://github.com/thatSFguy/meshcore-extras)**
+> and is archived here. The website is now
+> **https://thatsfguy.github.io/meshcore-extras/**. New firmware, fixes and
+> releases are published only there.
+
 A personal, car-based MeshCore edge relay. This is a **fork** of the official
 [MeshCore](https://github.com/meshcore-dev/MeshCore) repository, modified so a
 repeater installed in a parked car can serve its owner's companion devices
