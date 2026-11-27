@@ -124,6 +124,7 @@ public:
   bool advert();
   bool floodAdvert();   // flood self-advert in the default scope (as the app's flood advert)
   void persistContacts() { saveContacts(); }   // for on-device UIs that add contacts
+  void persistChannels() { saveChannels(); }   // for on-device UIs that add or remove channels
   void enterCLIRescue();
 
   int  getRecentlyHeard(AdvertPath dest[], int max_num);

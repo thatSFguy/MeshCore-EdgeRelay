@@ -57,12 +57,22 @@ bridges that one hop. A moving node must not act like a normal repeater, so:
 - Also fork-only: the K.I.S.S. Messenger (`LilyGo_TLora_V2_1_1_6_kiss_messenger`):
   a standalone on-device chat UI in `examples/companion_radio/ui-kiss/` (CardKB
   keyboard, OLED, buzzer GPIO 15, vibration GPIO 13, no BLE), plus two small
-  public additions to the companion's `MyMesh`: `floodAdvert()` and
-  `persistContacts()`. Simple mode: no auto-added contacts; DMs are set up by the
+  public additions to the companion's `MyMesh`: `floodAdvert()`,
+  `persistContacts()` and `persistChannels()`. Simple mode: no auto-added contacts; DMs are set up by the
   phone app's exchange in the group chat, which carries both public keys:
   "DM request for @[Bob] mch:r:<64 hex>" and
   "DM accepted @[Alice] mch:a:<8 hex of Alice's key>:<64 hex>". Keep this
   format identical to the app's; no adverts are involved.
+- Also fork-only: the K.I.S.S. Messenger for the T-Deck
+  (`LilyGo_TDeck_kiss_messenger` in `variants/lilygo_tdeck`): the same behaviour
+  in `examples/companion_radio/ui-deck/` with a colour UI modelled on the phone
+  app (its dark theme, avatar colours, wording, regional presets and channel
+  setup rules), keyboard, trackball, GT911 touch and I2S tones. Its DM handshake
+  and clock sync are copies of ui-kiss: change both together. The env sets
+  `PIN_BOARD_SDA=18`/`PIN_BOARD_SCL=8`; without them `ESP32Board::begin()` starts
+  Wire on the S3 default pins and the keyboard never answers (an upstream T-Deck
+  bug). The I2S clock must stay stopped between tones: running, it couples into
+  the trackball lines.
 - Every board's `<board>_personal_relay` env mirrors its `_repeater` env with
   only the example and `ADVERT_NAME` changed.
 
