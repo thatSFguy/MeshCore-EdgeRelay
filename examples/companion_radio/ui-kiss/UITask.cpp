@@ -444,6 +444,41 @@ void UITask::handleChannelControl(const char* sender, const char* body, uint8_t 
   }
 }
 
+// ---------------------------------------------------------------- duplicates
+//
+// Copies of one message, dropped as the phone app drops them. A DM's retries
+// are deliberately distinct packets (each carries its attempt number), so the
+// mesh doesn't filter them and the firmware hands every copy up; they share
+// the sender's key, the sender's timestamp and the text. A channel post can
+// also come round again after the mesh's seen-table has forgotten it. The UI
+// isn't given a channel post's timestamp, so those match on channel + exact
+// "sender: text" within a few minutes.
+#define DUP_SLOTS            32
+#define DUP_DM_MILLIS        (60UL * 60 * 1000)
+#define DUP_CHANNEL_MILLIS   (5UL * 60 * 1000)
+
+struct SeenMsg { uint32_t key; unsigned long at; };
+static SeenMsg s_seen[DUP_SLOTS];
+static int s_seen_head = 0;
+
+static uint32_t fnv1a(uint32_t h, const void* data, size_t len) {
+  const uint8_t* p = (const uint8_t*)data;
+  for (size_t i = 0; i < len; i++) { h ^= p[i]; h *= 16777619UL; }
+  return h;
+}
+
+// true if this key was seen within window_ms; otherwise remembers it
+static bool seenRecently(uint32_t key, unsigned long window_ms) {
+  unsigned long now = millis();
+  for (int i = 0; i < DUP_SLOTS; i++) {
+    if (s_seen[i].key == key && s_seen[i].at && now - s_seen[i].at < window_ms) return true;
+  }
+  s_seen[s_seen_head].key = key;
+  s_seen[s_seen_head].at = now | 1;
+  s_seen_head = (s_seen_head + 1) % DUP_SLOTS;
+  return false;
+}
+
 // ---------------------------------------------------------------- mesh events
 
 // No app or GPS to set the time, so take it from the mesh, but never from one
@@ -508,6 +543,10 @@ void UITask::syncClock(const char* source, uint32_t their_time) {
 
 void UITask::onMessageRecv(mesh::Packet *pkt, const ContactInfo &from, uint8_t txt_type, uint32_t sender_timestamp, const char* text) {
   if (!(txt_type == TXT_TYPE_PLAIN || txt_type == TXT_TYPE_SIGNED_PLAIN)) return;
+  uint32_t key = fnv1a(2166136261UL, from.id.pub_key, PUB_KEY_SIZE);
+  key = fnv1a(key, &sender_timestamp, sizeof(sender_timestamp));
+  key = fnv1a(key, text, strlen(text));
+  if (seenRecently(key, DUP_DM_MILLIS)) return;   // a retry of one we already have
   syncClock(from.name, sender_timestamp);
   int chat = findDirectChat(from.id.pub_key);
   if (chat < 0) {
@@ -524,6 +563,9 @@ void UITask::onMessageRecv(mesh::Packet *pkt, const ContactInfo &from, uint8_t t
 
 void UITask::onChannelMessageRecv(mesh::Packet *pkt, ChannelDetails& channel_details, const char* text) {
   int ch_idx = the_mesh.findChannelIdx(channel_details.channel);
+  uint32_t key = fnv1a(2166136261UL ^ 0x5A, &ch_idx, sizeof(ch_idx));
+  key = fnv1a(key, text, strlen(text));
+  if (seenRecently(key, DUP_CHANNEL_MILLIS)) return;   // the same post again
   int chat = ch_idx >= 0 ? findChannelChat(ch_idx) : -1;
   if (chat < 0) {
     rebuildChats();
