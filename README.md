@@ -9,7 +9,6 @@
 >
 > - **Install or update firmware:** https://thatsfguy.github.io/meshcore-extras/program.html
 > - **Releases:** https://github.com/thatSFguy/meshcore-extras/releases
-> - **Issues and questions:** https://github.com/thatSFguy/meshcore-extras/issues
 >
 > This repository is an archived copy and gets no further updates or releases.
 > Everything below is the old README, kept for reference.
