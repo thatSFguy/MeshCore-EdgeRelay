@@ -1,9 +1,20 @@
-# MeshCore EdgeRelay
+# MeshCore EdgeRelay: moved to MeshCore Extras
 
-> **This repository has moved to [thatSFguy/meshcore-extras](https://github.com/thatSFguy/meshcore-extras)**
-> and is archived here. The website is now
-> **https://thatsfguy.github.io/meshcore-extras/**. New firmware, fixes and
-> releases are published only there.
+> [!CAUTION]
+> **This project has MOVED. It is NOT discontinued.**
+>
+> The Personal Relay is actively developed at
+> **[github.com/thatSFguy/meshcore-extras](https://github.com/thatSFguy/meshcore-extras)**,
+> together with the K.I.S.S. Messenger and other extras.
+>
+> - **Install or update firmware:** https://thatsfguy.github.io/meshcore-extras/program.html
+> - **Releases:** https://github.com/thatSFguy/meshcore-extras/releases
+> - **Issues and questions:** https://github.com/thatSFguy/meshcore-extras/issues
+>
+> This repository is an archived copy and gets no further updates or releases.
+> Everything below is the old README, kept for reference.
+
+---
 
 A personal, car-based MeshCore edge relay. This is a **fork** of the official
 [MeshCore](https://github.com/meshcore-dev/MeshCore) repository, modified so a
